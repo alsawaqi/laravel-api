@@ -1,0 +1,8 @@
+{
+    "require": {
+        "spatie/laravel-permission": "*"
+    },
+    "files": [
+      "app/Helpers/UniqueIdHelper.php"
+    ]
+}
