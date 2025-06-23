@@ -2,7 +2,7 @@ services:
   laravel-app-api:
     build:
       context: .
-      dockerfile: docker/php/php.dockerfile
+      dockerfile: docker/dev/php/php.dockerfile
     volumes:
       - /home/abdallah644/projects/my-projects/laravel-api/src:/var/www/html
     command: >
@@ -16,14 +16,14 @@ services:
       - "83:80"
     volumes:
       - /home/abdallah644/projects/my-projects/laravel-api/src:/var/www/html
-      - /home/abdallah644/projects/my-projects/laravel-api/docker/nginx/default.conf:/etc/nginx/conf.d/default.conf
+      - /home/abdallah644/projects/my-projects/laravel-api/docker/dev/nginx/default.conf:/etc/nginx/conf.d/default.conf
     networks:
       - proxy_network
 
   artisan:
     build:
       context: /home/abdallah644/projects/my-projects/laravel-api/src
-      dockerfile: /home/abdallah644/projects/my-projects/laravel-api/docker/artisan/artisan.dockerfile
+      dockerfile: /home/abdallah644/projects/my-projects/laravel-api/docker/dev/artisan/artisan.dockerfile
     volumes:
       - /home/abdallah644/projects/my-projects/laravel-api/src:/var/www/html
     networks:

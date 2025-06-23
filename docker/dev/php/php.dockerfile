@@ -1,6 +1,6 @@
 FROM php:8.3.7-fpm
 
-COPY docker/php/opcache.ini /usr/local/etc/php/conf.d/opcache.ini
+COPY docker/dev/php/opcache.ini /usr/local/etc/php/conf.d/opcache.ini
 
 # Install dependencies
 RUN apt-get update && apt-get install -y \

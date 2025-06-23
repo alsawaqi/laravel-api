@@ -1,0 +1,40 @@
+services:
+  laravel-app-api:
+    build:
+      context: .
+      dockerfile: docker/prod/php/php.dockerfile
+    volumes:
+      - ./src:/var/www/html:ro  # read-only in prod (optional for security)
+      - ./src/storage:/var/www/html/storage
+      - ./src/bootstrap/cache:/var/www/html/bootstrap/cache
+    environment:
+      APP_ENV: production
+      APP_DEBUG: false
+    networks:
+      - npm_network
+
+  nginx:
+    image: nginx:1.25-alpine
+    volumes:
+      - ./src:/var/www/html:ro
+      - ./docker/prod/nginx/default.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - laravel-app-api
+    networks:
+      - npm_network
+ 
+
+  artisan:
+    build:
+      context: .
+      dockerfile: docker/prod/artisan/artisan.dockerfile
+    volumes:
+      - ./src:/var/www/html
+    networks:
+      - npm_network
+    depends_on:
+      - laravel-app-api
+
+networks:
+  npm_network:
+    external: true
