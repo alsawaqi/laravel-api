@@ -34,6 +34,16 @@ services:
       - npm_network
     depends_on:
       - laravel-app-api
+      
+  composer:
+    image: composer:latest
+    volumes:
+      - ./src:/var/www/html
+    working_dir: /var/www/html
+    command: composer install --no-dev --optimize-autoloader
+    networks:
+      - npm_network
+
 
 networks:
   npm_network:

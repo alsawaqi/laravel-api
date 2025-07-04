@@ -1,7 +1,9 @@
 <?php
 
 use Illuminate\Http\Request;
+use App\Models\ProductBrands;
 use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\ProductBrandsController;
 use App\Http\Controllers\ProductDepartmentController;
 
 Route::get('/user', function (Request $request) {
@@ -14,6 +16,15 @@ Route::controller(ProductDepartmentController::class)->group(function () {
        Route::get('/subcategories/{id}/subsubcategories','getSubSubCategories');
 
 });   
+
+
+
+Route::controller(ProductBrandsController::class)->group(function () {
+
+       Route::get('/productbrand', 'index');
+
+
+});
 
 
 

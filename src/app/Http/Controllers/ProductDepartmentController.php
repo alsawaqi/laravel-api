@@ -18,7 +18,7 @@ class ProductDepartmentController extends Controller
     {
          return response()->json(DB::table('Products_Sub_Department_T')
                                         ->where('product_department_id', $id)
-                                        ->select('id', 'name', 'product_department_id')
+                                        ->select('id', 'name', 'product_department_id','image_path')
                                         ->get());
     }
 
@@ -27,7 +27,7 @@ class ProductDepartmentController extends Controller
     {
          return response()->json(DB::table('Products_Sub_Sub_Department_T')
                                 ->where('product_sub_department_id', $id)
-                                ->select('id', 'name', 'product_sub_department_id')
+                                ->select('id', 'name', 'product_sub_department_id','image_path')
                                 ->get());
     }
 }
