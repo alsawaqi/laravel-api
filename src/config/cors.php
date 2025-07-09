@@ -17,7 +17,7 @@ return [
 
    'paths' => ['api/*', 'sanctum/csrf-cookie', '*'],
     'allowed_methods' => ['*'],
-    'allowed_origins' => ['http://localhost:84'], // Frontend URL
+    'allowed_origins' => ['http://localhost:84','https://abdallahweb.com'], // Frontend URL
     'allowed_origins_patterns' => [],
     'allowed_headers' => ['*'],
     'exposed_headers' => [],
