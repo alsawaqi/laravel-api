@@ -13,21 +13,18 @@ class ProductsSubSubDepartmentController extends Controller
     {
         try{
 
-              $filters = ProductSpecificationDescription::with('values')
+               $filters = ProductSpecificationDescription::with('values')
                             ->where('product_sub_sub_department_id', $subsub->id)
                             ->get();
        
-        return response()->json([
-                                  'data'=>$subsub, 
-                                  'filters' => $filters
-                                ]);
+                return response()->json([
+                                        'data'=>$subsub, 
+                                        'filters' => $filters
+                                        ]);
 
-        }catch(\Exception $e){
-
-
-
-            return response()->json(['error' => $e->getMessage()], 404);
-        }
+                }catch(\Exception $e){
+                    return response()->json(['error' => $e->getMessage()], 404);
+                }
        
         
     }
