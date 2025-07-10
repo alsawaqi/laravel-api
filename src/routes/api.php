@@ -29,7 +29,8 @@ Route::controller(ProductBrandsController::class)->group(function () {
 });
 
 Route::controller(ProductsController::class)->group(function () {
-        Route::get('/products/{product:slug}', 'show');
+        Route::get('/products/{subsub:slug}', 'show');
+        Route::get('/products/details/{product:slug}', 'detail');
 });
 
  
