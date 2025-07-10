@@ -33,12 +33,12 @@ public function detail(Products $product)
     try{
 
   
- $product->load('images');
+    $product->load('images');
 
     $specs = ProductSpecificationProduct::with('description')
-        ->where('product_id', $product->id)
-        ->get()
-        ->groupBy(fn ($item) => $item->description->name);
+            ->where('product_id', $product->id)
+            ->get()
+            ->groupBy(fn ($item) => $item->description->name);
 
     $formatted = $specs->map(function ($items, $key) {
         return [
@@ -49,7 +49,7 @@ public function detail(Products $product)
 
       }catch(\Exception $e){
         return response()->json(['error' => $e->getMessage()], 404);
-    }
+       }
 
     return response()->json([
         'product' => $product,
