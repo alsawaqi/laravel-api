@@ -4,26 +4,35 @@ namespace App\Http\Controllers;
 
 use App\Models\Products;
 use Illuminate\Http\Request;
-use App\Models\ProductsSubSubDepartment;
+use App\Models\ProductSpecificationProduct;
+ 
 
 class ProductsController extends Controller
 {
     //
 
-public function show(ProductsSubSubDepartment $subsub, Request $request)
+public function show(Products $product)
 {
-   $products = Products::with(['image', 'specifications'])
-        ->where('product_sub_sub_department_id', $subsub->id);
+    
+       $product->load('images');
 
-    if ($request->has('spec_ids')) {
-        $specIds = $request->input('spec_ids', []);
+    $specs = ProductSpecificationProduct::with('description')
+        ->where('product_id', $product->id)
+        ->get()
+        ->groupBy(fn ($item) => $item->description->name);
 
-        $products->whereHas('specifications', function ($query) use ($specIds) {
-            $query->whereIn('id', $specIds);
-        });
-    }
+    $formatted = $specs->map(function ($items, $key) {
+        return [
+            'category' => $key,
+            'values' => $items->pluck('value')->unique()->values()
+        ];
+    })->values();
 
-    return response()->json($products->get());
+    return response()->json([
+        'product' => $product,
+        'specifications' => $formatted,
+    ]);
+
 }
 
 
