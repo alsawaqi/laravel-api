@@ -30,6 +30,9 @@ public function show(ProductsSubSubDepartment $subsub, Request $request)
 
 public function detail(Products $product)
 {
+    try{
+
+  
  $product->load('images');
 
     $specs = ProductSpecificationProduct::with('description')
@@ -43,6 +46,10 @@ public function detail(Products $product)
             'values' => $items->pluck('value')->unique()->values()
         ];
     })->values();
+
+      }catch(\Exception $e){
+        return response()->json(['error' => $e->getMessage()], 404);
+    }
 
     return response()->json([
         'product' => $product,
