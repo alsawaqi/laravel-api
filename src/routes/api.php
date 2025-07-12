@@ -1,16 +1,17 @@
 <?php
 
 use Illuminate\Http\Request;
-use App\Models\ProductBrands;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\ProductsController;
 use App\Http\Controllers\ProductBrandsController;
 use App\Http\Controllers\ProductDepartmentController;
-use App\Http\Controllers\ProductsController;
 use App\Http\Controllers\ProductsSubSubDepartmentController;
 
-Route::get('/user', function (Request $request) {
-    return $request->user();
-})->middleware('auth:sanctum');
+Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
+     return response()->json(['user' => Auth::user()]);
+});
 
 Route::controller(ProductDepartmentController::class)->group(function () {
        Route::get('/productdepartment', 'index');
@@ -31,6 +32,14 @@ Route::controller(ProductBrandsController::class)->group(function () {
 Route::controller(ProductsController::class)->group(function () {
         Route::get('/products/{subsub:slug}', 'show');
         Route::get('/products/details/{product:slug}', 'detail');
+});
+
+
+Route::controller(AuthController::class)->group(function () {
+    Route::post('/register', 'register');
+    Route::post('/login', 'login');
+    Route::post('/logout', 'logout');
+
 });
 
  
