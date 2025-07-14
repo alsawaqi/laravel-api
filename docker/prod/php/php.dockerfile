@@ -42,9 +42,18 @@ RUN docker-php-ext-install pdo opcache
 # Install Composer
 RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
 
-# Set permissions
-RUN chown -R www-data:www-data /var/www/html
-
+# Set working directory
 WORKDIR /var/www/html
+
+# ✅ Set permissions for Laravel writable directories
+RUN mkdir -p storage/logs bootstrap/cache \
+    && touch storage/logs/laravel.log \
+    && chown -R www-data:www-data storage bootstrap/cache \
+    && chmod -R 775 storage bootstrap/cache
+
+COPY docker/prod/php/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]    
 
 CMD ["php-fpm"]

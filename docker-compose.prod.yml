@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: docker/prod/php/php.dockerfile
     volumes:
-      - ./src:/var/www/html # read-only in prod (optional for security)
+      - ./src:/var/www/html  # read-only in prod (optional for security)
       - ./src/storage:/var/www/html/storage
       - ./src/bootstrap/cache:/var/www/html/bootstrap/cache
     environment:
@@ -22,6 +22,15 @@ services:
       - laravel-app-api
     networks:
       - npm_network
+
+  composer:
+    image: composer:latest
+    volumes:
+      - ./src:/var/www/html
+    working_dir: /var/www/html
+    command: composer install --no-dev --optimize-autoloader
+    networks:
+      - npm_network     
  
 
   artisan:
@@ -30,21 +39,16 @@ services:
       dockerfile: docker/prod/artisan/artisan.dockerfile
     volumes:
       - ./src:/var/www/html
-    networks:
-      - npm_network
+    command: php artisan migrate --force 
     depends_on:
       - laravel-app-api
-      
-  composer:
-    image: composer:latest
-    volumes:
-      - ./src:/var/www/html
-    working_dir: /var/www/html
-    command: composer install --no-dev --optimize-autoloader
     networks:
-      - npm_network
-
-
+      - npm_network  
+      
 networks:
   npm_network:
     external: true
+
+volumes:
+  storage-data:
+  cache-data:   
