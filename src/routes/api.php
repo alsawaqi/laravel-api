@@ -5,6 +5,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\ProductsController;
+use App\Http\Controllers\OrdersPlacedController;
 use App\Http\Controllers\ProductBrandsController;
 use App\Http\Controllers\ProductDepartmentController;
 use App\Http\Controllers\ProductsSubSubDepartmentController;
@@ -12,6 +13,11 @@ use App\Http\Controllers\ProductsSubSubDepartmentController;
 Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
      return response()->json(['user' => Auth::user()]);
 });
+
+
+Route::post('/orders/place', [OrdersPlacedController::class, 'place'])->middleware('auth:sanctum');
+
+
 
 Route::controller(ProductDepartmentController::class)->group(function () {
        Route::get('/productdepartment', 'index');
