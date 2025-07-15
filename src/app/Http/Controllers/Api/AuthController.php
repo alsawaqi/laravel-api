@@ -41,8 +41,10 @@ class AuthController extends Controller
             'password' => Hash::make($request->password),
         ]);
 
+        $customerCode = CodeGenerator::createCode('CUS', 'Customers_Master_T', 'Customer_Id');
+
         CustomersMaster::create([
-            'Customer_Code' => CodeGenerator::createCode('CUS', 'Customers_Master_T', 'Customer_Id'),
+            'Customer_Code' => $customerCode,
             'User_Id' => $user->id,
             'Customer_Full_Name' => $request->name,
         ]);

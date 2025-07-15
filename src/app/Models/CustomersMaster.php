@@ -11,8 +11,9 @@ class CustomersMaster extends Model
 
 
     protected $fillable = [
+           'Customer_Code',
            'User_Id',
-          'Customer_Full_Name',
+           'Customer_Full_Name',
           
      ];
     
