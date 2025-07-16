@@ -5,11 +5,28 @@ namespace App\Http\Controllers;
 use Illuminate\Support\Str;
 use Illuminate\Http\Request;
 use App\Helpers\CodeGenerator;
+use App\Models\OrdersPlaced;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Auth;
 
 class OrdersPlacedController extends Controller
 {
-    //
+ 
+
+    public function index()
+    {
+
+        $customer = Auth::user()?->customers;
+     
+
+
+        $orders = OrdersPlaced::orderBy('id', 'desc')
+                                ->where('customer_id', $customer->id)
+                                ->get();
+           
+
+        return response()->json($orders);
+    }
 
     public function place(Request $request)
 {
@@ -32,7 +49,7 @@ class OrdersPlacedController extends Controller
         $totalPrice = collect($validated['cart_items'])->sum('subtotal') + $validated['shipping_cost'];
 
 
-        $customer = auth()->user()?->customers;
+        $customer = Auth::user()?->customers;
         // Insert into Orders_Placed_T
         $orderId = DB::table('Orders_Placed_T')->insertGetId([
             'order_code' => $orderCode,

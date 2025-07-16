@@ -18,8 +18,9 @@ Route::middleware('auth:sanctum')->get('/user', function (Request $request) {
 
 
 Route::controller(OrdersPlacedController::class)->group(function () {
-           Route::post('/orders/place','place');
-}); 
+                     Route::post('/orders/place','place');
+                     Route::get('/orders', 'index');
+              }); 
 
 
 Route::controller(ProductDepartmentController::class)->group(function () {

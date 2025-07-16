@@ -32,16 +32,17 @@ class AuthController extends Controller
     try {
         DB::beginTransaction();
 
-        $UserCode = CodeGenerator::createCode('USR', 'Secx_Admin_User_Master_T', 'User_Id');
+        $UserCode = CodeGenerator::createCode('USR', 'Secx_User_Master_T', 'User_Id');
 
         $user = User::create([
+            
             'User_Id' => $UserCode,
             'User_Name' => $request->username,
             'email' => $request->email,
             'password' => Hash::make($request->password),
         ]);
 
-        $customerCode = CodeGenerator::createCode('CUS', 'Customers_Master_T', 'Customer_Id');
+        $customerCode = CodeGenerator::createCode('CUS', 'Customers_Master_T', 'Customer_Code');
 
         CustomersMaster::create([
             'Customer_Code' => $customerCode,
