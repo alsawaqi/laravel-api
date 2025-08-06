@@ -9,4 +9,10 @@ class OrdersPlacedDetails extends Model
     //
     protected $table = 'Orders_Placed_Details_T';
     protected $guarded = [];
+
+
+    public function product()
+{
+    return $this->belongsTo(Products::class, 'Products_Id');
+}
 }

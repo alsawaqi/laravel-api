@@ -3,10 +3,11 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Support\Str;
+use App\Models\OrdersPlaced;
 use Illuminate\Http\Request;
 use App\Helpers\CodeGenerator;
-use App\Models\OrdersPlaced;
 use Illuminate\Support\Facades\DB;
+use App\Models\OrdersPlacedDetails;
 use Illuminate\Support\Facades\Auth;
 
 class OrdersPlacedController extends Controller
@@ -21,7 +22,7 @@ class OrdersPlacedController extends Controller
 
 
         $orders = OrdersPlaced::orderBy('id', 'desc')
-                                ->where('customer_id', $customer->id)
+                                ->where('Customers_Id', $customer->id)
                                 ->get();
            
 
@@ -52,11 +53,12 @@ class OrdersPlacedController extends Controller
         $customer = Auth::user()?->customers;
         // Insert into Orders_Placed_T
         $orderId = DB::table('Orders_Placed_T')->insertGetId([
-            'order_code' => $orderCode,
-            'transaction_number' => $transactionNumber,
-            'customer_id' => $customer->id,
-            'total_price' => $totalPrice,
-            'status' => 'pending',
+            'Order_Code' => $orderCode,
+            'Customers_Contacts_Id' => $request->Customers_Contacts_Id,
+            'Transaction_Number' => $transactionNumber,
+            'Customers_Id' => $customer->id,
+            'Total_Price' => $totalPrice,
+            'Status' => 'pending',
             'created_at' => now(),
             'updated_at' => now(),
         ]);
@@ -64,18 +66,18 @@ class OrdersPlacedController extends Controller
         foreach ($validated['cart_items'] as $item) {
 
 
-               $orderplacecode = CodeGenerator::createCode('ORDP', 'Orders_Placed_Details_T', 'order_Placed_code');
+               $orderplacecode = CodeGenerator::createCode('ORDP', 'Orders_Placed_Details_T', 'Order_Placed_Code');
 
             DB::table('Orders_Placed_Details_T')->insert([
-                'order_Placed_code' => $orderplacecode,
-                'order_id' => $orderId,
+                'Order_Placed_Code' => $orderplacecode,
+                'Orders_Placed_Id' => $orderId,
                
-                'product_id' => $item['product_id'],
-                'quantity' => $item['quantity'],
-                'price' => $item['price'],
-                'subtotal' => $item['subtotal'],
-                'vat' => $item['vat'] ?? 0,
-                'status' => 'pending',
+                'Products_Id' => $item['product_id'],
+                'Quantity' => $item['quantity'],
+                'Price' => $item['price'],
+                'Subtotal' => $item['subtotal'],
+                'Vat' => $item['vat'] ?? 0,
+                'Status' => 'pending',
                 'created_at' => now(),
                 'updated_at' => now(),
             ]);
@@ -95,4 +97,15 @@ class OrdersPlacedController extends Controller
         ], 500);
     }
 }
+
+
+public function getOrderDetails($id)
+{
+    $orderDetails = OrdersPlacedDetails::with('product')  // assuming relation is `product()`
+        ->where('Orders_Placed_Id', $id)
+        ->get();
+
+    return response()->json($orderDetails);
+}
+
 }

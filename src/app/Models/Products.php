@@ -27,22 +27,22 @@ class Products extends Model
 
     public function images()
     {
-        return $this->hasMany(ProductsImage::class, 'product_id', 'id');
+        return $this->hasMany(ProductsImage::class, 'Products_Id', 'id');
     }
 
     public function image()
     {
-        return $this->hasOne(ProductsImage::class, 'product_id', 'id');
+        return $this->hasOne(ProductsImage::class, 'Products_Id', 'id');
     }
 
 
     public function subSubDepartment()
     {
-        return $this->belongsTo(ProductsSubSubDepartment::class, 'product_sub_sub_department_id');
+        return $this->belongsTo(ProductsSubSubDepartment::class, 'Product_Sub_Sub_Department_Id');
     }
 
     public function specifications()
     {
-        return $this->hasMany(ProductSpecificationProduct::class, 'product_id', 'id');
+        return $this->hasMany(ProductSpecificationProduct::class, 'Product_Id', 'id');
     }
 }

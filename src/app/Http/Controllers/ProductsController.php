@@ -14,7 +14,7 @@ class ProductsController extends Controller
 public function show(ProductsSubSubDepartment $subsub, Request $request)
 {
    $products = Products::with(['image', 'specifications'])
-        ->where('product_sub_sub_department_id', $subsub->id);
+        ->where('Product_Sub_Sub_Department_Id', $subsub->id);
 
     if ($request->has('spec_ids')) {
         $specIds = $request->input('spec_ids', []);
@@ -36,7 +36,7 @@ public function detail(Products $product)
     $product->load('images');
 
     $specs = ProductSpecificationProduct::with('description')
-            ->where('product_id', $product->id)
+            ->where('Product_Id', $product->id)
             ->get()
             ->groupBy(fn ($item) => $item->description->name);
 

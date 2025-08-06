@@ -17,8 +17,8 @@ class ProductDepartmentController extends Controller
     public function getSubCategories($id)
     {
          return response()->json(DB::table('Products_Sub_Department_T')
-                                        ->where('product_department_id', $id)
-                                        ->select('id', 'name', 'product_department_id','image_path')
+                                        ->where('Products_Departments_Id', $id)
+                                        ->select('id', 'Sub_Department_Name', 'Products_Departments_Id','Image_path')
                                         ->get());
     }
 
@@ -26,8 +26,8 @@ class ProductDepartmentController extends Controller
     public function getSubSubCategories($id)
     {
          return response()->json(DB::table('Products_Sub_Sub_Department_T')
-                                ->where('product_sub_department_id', $id)
-                                ->select('id', 'name', 'product_sub_department_id','image_path','slug')
+                                ->where('Product_Sub_Department_Id', $id)
+                                ->select('id', 'Product_Sub_Sub_Department_Name', 'Product_Sub_Department_Id','Image_Path','Slug')
                                 ->get());
     }
 }

@@ -11,6 +11,6 @@ class ProductSpecificationDescription extends Model
 
     public function values()
 {
-    return $this->hasMany(ProductSpecificationProduct::class, 'product_specification_description_id');
+    return $this->hasMany(ProductSpecificationProduct::class, 'Product_Specification_Description_Id');
 }
 }

@@ -12,10 +12,10 @@ class CustomersMaster extends Model
 
     protected $fillable = [
            'Customer_Code',
+           'Customer_Type_Id',
            'User_Id',
            'Customer_Full_Name',
-          
-     ];
+          ];
     
  
     

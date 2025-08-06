@@ -10,11 +10,11 @@ class ProductSpecificationProduct extends Model
     protected $table = 'Product_Specification_Product_T';
     public function description()
         {
-            return $this->belongsTo(ProductSpecificationDescription::class, 'product_specification_description_id');
+            return $this->belongsTo(ProductSpecificationDescription::class, 'Product_Specification_Description_Id');
         }
 
     public function product()
         {
-            return $this->belongsTo(Products::class, 'product_id');
+            return $this->belongsTo(Products::class, 'Product_Id');
         }
 }
