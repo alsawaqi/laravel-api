@@ -19,8 +19,18 @@ use App\Http\Controllers\ProductsSubSubDepartmentController;
 
 Route::middleware([ForceJwtFromCookie::class,'auth:api'])->group(function () {
 
-      Route::get('/user', function (Request $request) {
-               return response()->json(['user' => Auth::guard('api')->user()]);
+      
+              
+});
+
+
+
+Route::get('/user', function (Request $request) {
+               return response()->json([
+                                          'user' => Auth::guard('api')->user(),
+                                          'data' =>'test'
+              
+                                         ]);
          });
 
 
@@ -67,13 +77,9 @@ Route::middleware([ForceJwtFromCookie::class,'auth:api'])->group(function () {
 
 
   Route::controller(CustomersContactController::class)->group(function () {
-
- Route::get('/countries', 'countries_index');
+       Route::get('/countries', 'countries_index');
   });
         
-              
-});
-
 
  
 

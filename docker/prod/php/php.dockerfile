@@ -2,6 +2,12 @@ FROM php:8.3.7-fpm
 
 COPY docker/dev/php/opcache.ini /usr/local/etc/php/conf.d/opcache.ini
 
+
+COPY src/storage /var/www/html/storage
+COPY src/bootstrap/cache /var/www/html/bootstrap/cache
+RUN chown -R www-data:www-data storage bootstrap/cache \
+ && chmod -R ug+rwX storage bootstrap/cache
+
 # Install dependencies
 RUN apt-get update && apt-get install -y \
     gnupg2 \
