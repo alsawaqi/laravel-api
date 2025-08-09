@@ -63,6 +63,7 @@ class AuthController extends Controller
             $refreshCookie = cookie('refresh_token', $refreshToken, 60 * 24 * 7, '/', null, false, true, false, 'Lax');
 
            return response([
+                         'users-id' => Auth::id(),
                         'message' => 'Registered and logged in successfully.',
                         'user' => $user,
                         'token' => $accessToken // 🔁 include token in response too
@@ -77,29 +78,67 @@ class AuthController extends Controller
     }
 
     public function login(Request $request)
-    {
-                    // Map the input manually
-                    $credentials = [
-                        'email' => $request->email,
-                        'password' => $request->password,
-                    ];
+{
+    // 1) Validate input
+    $data = $request->validate([
+        'email'    => ['required', 'string'],
+        'password' => ['required', 'string'],
+    ]);
 
-                    if (!$accessToken= JWTAuth::attempt($credentials)) {
-                        return response()->json(['message' => 'Invalid credentials'], Response::HTTP_UNAUTHORIZED);
-                    }
+    // 2) Your users table uses "Email" (capital E). Map accordingly.
+    $credentials = [
+        'Email'    => $data['email'],
+        'password' => $data['password'],
+    ];
 
-
-                      $refreshToken = JWTAuth::claims(['type' => 'refresh'])->fromUser(Auth::user());
-
-                      $accessCookie = cookie('token', $accessToken, 60, '/', null, false, true, false, 'Lax');
-                      $refreshCookie = cookie('refresh_token', $refreshToken, 60 * 24 * 7, '/', null, false, true, false, 'Lax');
-
-                 return response()->json(['message' => 'Logged in', 'user' => Auth::user()])
-                                        ->withCookie($accessCookie)
-                                        ->withCookie($refreshCookie);
-
-                  
+    if (! $accessToken = JWTAuth::attempt($credentials)) {
+        return response()->json(['message' => 'Invalid credentials'], Response::HTTP_UNAUTHORIZED);
     }
+
+    // 3) Build cookie attributes from config (recommended for prod)
+    // session.domain should be like ".yourdomain.com" to cover subdomains
+    $domain   = config('session.domain');                                   // e.g. ".abdallahweb.com"
+    $secure   = (bool) (config('session.secure', true));                     // must be true in HTTPS/proxy
+    $sameSite = strtolower(config('session.same_site', 'lax'));              // 'lax' for subdomains; use 'none' for cross-domain
+    $path     = '/';
+
+    // 4) Issue refresh token (7 days) + access token (shorter)
+    // Mark refresh explicitly so you can validate its type later
+    $refreshToken = JWTAuth::claims(['type' => 'refresh'])->fromUser(Auth::user());
+
+    // NOTE: minutes, not seconds
+    $accessCookie  = cookie(
+        'token',
+        $accessToken,
+        60,            // 60 minutes; should match/underrun your jwt ttl
+        $path,
+        $domain,
+        $secure,
+        true,          // httpOnly
+        false,
+        $sameSite      // 'lax' or 'none'
+    );
+
+    $refreshCookie = cookie(
+        'refresh_token',
+        $refreshToken,
+        60 * 24 * 7,   // 7 days
+        $path,
+        $domain,
+        $secure,
+        true,
+        false,
+        $sameSite
+    );
+
+    return response()
+        ->json([
+            'message' => 'Logged in',
+            'user'    => Auth::user(),
+        ])
+        ->withCookie($accessCookie)
+        ->withCookie($refreshCookie);
+}
 
     public function logout(Request $request)
     {
