@@ -43,6 +43,10 @@ class Products extends Model
 
     public function specifications()
     {
-        return $this->hasMany(ProductSpecificationProduct::class, 'Product_Id', 'id');
+         return $this->hasMany(
+        ProductSpecificationProduct::class,
+        'Product_Id',   // FK on Product_Specification_Product_T
+        'id'            // local key on Products_Master_T
+        );
     }
 }
