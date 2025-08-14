@@ -95,7 +95,7 @@ Route::controller(ProductDepartmentController::class)->group(function () {
 });   
 
 Route::controller(ProductsSubSubDepartmentController::class)->group(function () {
-       Route::get('/subsubdepartments/{subsub}', 'index');
+       Route::get('/subsubdepartments/{slug}', 'index');
        
 });
 
