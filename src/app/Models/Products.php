@@ -41,12 +41,16 @@ class Products extends Model
         return $this->belongsTo(ProductsSubSubDepartment::class, 'Product_Sub_Sub_Department_Id');
     }
 
-    public function specifications()
+   
+
+
+    // App\Models\Products (Products_Master_T)
+     public function specifications()
     {
-         return $this->hasMany(
-        ProductSpecificationProduct::class,
-        'Product_Id',   // FK on Product_Specification_Product_T
-        'id'            // local key on Products_Master_T
+        return $this->hasMany(
+            ProductSpecificationProduct::class,
+            'Product_Id',
+            'id'
         );
     }
 }
