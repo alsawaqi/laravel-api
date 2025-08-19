@@ -6,12 +6,15 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\RegionController;
 use App\Http\Middleware\ForceJwtFromCookie;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\ProductsController;
 use App\Http\Controllers\OrdersPlacedController;
 use App\Http\Controllers\ProductBrandsController;
+use App\Http\Controllers\ShippingQuoteController;
 use App\Http\Controllers\CustomersContactController;
+use App\Http\Controllers\DistrictController;
 use App\Http\Controllers\ProductDepartmentController;
 use App\Http\Controllers\ProductsSubSubDepartmentController;
 
@@ -54,6 +57,11 @@ Route::middleware([ForceJwtFromCookie::class,'auth:api'])->group(function () {
 
 
 
+
+    Route::post('/v1/shipping/quotes', [ShippingQuoteController::class, 'quote']);
+
+
+
     Route::prefix('/contacts')->group(function () {
 
     Route::get('/', [CustomersContactController::class, 'index']);
@@ -93,6 +101,20 @@ Route::controller(ProductDepartmentController::class)->group(function () {
        Route::get('/subcategories/{id}/subsubcategories','getSubSubCategories');
 
 });   
+
+
+Route::controller(RegionController::class)->group(function () {
+       Route::get('/region', 'index');
+   
+});
+
+
+
+Route::controller(DistrictController::class)->group(function () {
+       Route::get('/district', 'index');
+   
+});
+
 
 Route::controller(ProductsSubSubDepartmentController::class)->group(function () {
        Route::get('/subsubdepartments/{slug}', 'index');

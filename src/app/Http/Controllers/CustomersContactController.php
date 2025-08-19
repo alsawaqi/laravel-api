@@ -47,40 +47,39 @@ class CustomersContactController extends Controller
 
 
          try{
+                     $customer = Auth::user()?->customers;
 
-         
+                     $contact = CustomersContact::create([
+                        'Customer_Contact_Code' => CodeGenerator::createCode('ADDR', 'Customers_Contact_T', 'Customer_Contact_Code'),
+                        'Customers_Contact_Id' => $customer->id,
+                        'Type' => $request->Type,
+                        'Country_Id' => $request->Country_Id,
+                       
+                        'City_Id' => $request->City_Id,
+                        'Contact_Person_Name' => $request->Contact_Person_Name,
+                        'Telephone' => $request->Telephone,
+                        'Fax' => $request->Fax,
+                        'Gsm' => $request->Gsm,
+                        'Email' => $request->Email,
+                        'Designation' => $request->Designation,
+                        'Remarks' => $request->Remarks,
+                        'Created_date' => now(),
+                        'Region_Id' => $request->Region_Id,
+                        'District_Id' => $request->District_Id,
+                    
+                    ]);
 
-        $customer = Auth::user()?->customers;
+                    return response()->json([
+                        'message' => 'Address saved successfully.',
+                        'data' => $contact->load(['country', 'state', 'city']),
+                    ], 201);
 
-    
+            }catch (\Exception $e) {
+                return response()->json(['message' => 'Error saving contact: ' . $e->getMessage()], 500);
+            }
 
-        $contact = CustomersContact::create([
-            'Customer_Contact_Code' => CodeGenerator::createCode('ADDR', 'Customers_Contact_T', 'Customer_Contact_Code'),
-            'Customers_Contact_Id' => $customer->id,
-            'Type' => $request->Type,
-            'Country_Id' => $request->Country_Id,
-            'State_Id' => $request->State_Id,
-            'City_Id' => $request->City_Id,
-            'Contact_Person_Name' => $request->Contact_Person_Name,
-            'Telephone' => $request->Telephone,
-            'Fax' => $request->Fax,
-            'Gsm' => $request->Gsm,
-            'Email' => $request->Email,
-            'Designation' => $request->Designation,
-            'Remarks' => $request->Remarks,
-      
-            'Created_date' => now(),
-          
-        ]);
 
-        return response()->json([
-            'message' => 'Address saved successfully.',
-            'data' => $contact->load(['country', 'state', 'city']),
-        ], 201);
-
-        }catch (\Exception $e) {
-            return response()->json(['message' => 'Error saving contact: ' . $e->getMessage()], 500);
-        }
+       
     }
 
 
@@ -94,7 +93,7 @@ class CustomersContactController extends Controller
 
     public function byState($id)
     {
-        return City::where('State_Id', $id)->get();
+        return City::where('District_Id', $id)->get();
     }
 
 }

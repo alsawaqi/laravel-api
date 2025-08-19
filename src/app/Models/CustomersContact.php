@@ -13,7 +13,7 @@ class CustomersContact extends Model
         'Type',
         'Customers_Contact_Id',
         'City_Id',
-        'State_Id',
+      
         'Country_Id',
         'Contact_Person_Name',
         'Telephone',
@@ -24,6 +24,8 @@ class CustomersContact extends Model
         'Remarks',
         'Updated_status',
         'Created_date',
+        'Region_Id',
+        'District_Id'
     ];
 
     public function country()
