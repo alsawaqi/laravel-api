@@ -15,6 +15,8 @@ class CustomersMaster extends Model
            'Customer_Type_Id',
            'User_Id',
            'Customer_Full_Name',
+           'Telephone',
+           'updated_at'
           ];
     
  

@@ -9,12 +9,14 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\RegionController;
 use App\Http\Middleware\ForceJwtFromCookie;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\DistrictController;
 use App\Http\Controllers\ProductsController;
 use App\Http\Controllers\OrdersPlacedController;
 use App\Http\Controllers\ProductBrandsController;
 use App\Http\Controllers\ShippingQuoteController;
+use App\Http\Controllers\SupportTicketController;
+use App\Http\Controllers\AccountProfileController;
 use App\Http\Controllers\CustomersContactController;
-use App\Http\Controllers\DistrictController;
 use App\Http\Controllers\ProductDepartmentController;
 use App\Http\Controllers\ProductsSubSubDepartmentController;
 
@@ -57,8 +59,20 @@ Route::middleware([ForceJwtFromCookie::class,'auth:api'])->group(function () {
 
 
 
+     Route::get   ('/tickets',                 [SupportTicketController::class, 'index']);
+    Route::post  ('/tickets',                 [SupportTicketController::class, 'store']);
+    Route::get   ('/tickets/{id}',            [SupportTicketController::class, 'show']);
+    Route::post  ('/tickets/{id}/reply',      [SupportTicketController::class, 'reply']);
+    Route::patch ('/tickets/{id}/close',      [SupportTicketController::class, 'close']);
+    Route::delete('/tickets/{id}',            [SupportTicketController::class, 'destroy']);
+
+
 
     Route::post('/v1/shipping/quotes', [ShippingQuoteController::class, 'quote']);
+
+
+
+    
 
 
 
@@ -78,11 +92,21 @@ Route::middleware([ForceJwtFromCookie::class,'auth:api'])->group(function () {
   });
 
 
+    Route::put('/contacts/{id}', [CustomersContactController::class, 'update']);     // PUT
+    Route::delete('/contacts/{id}', [CustomersContactController::class, 'destroy']); 
+
+
 
   Route::controller(CustomersContactController::class)->group(function () {
        Route::get('/countries', 'countries_index');
   });
         
+
+
+   Route::get('/account/profile', [AccountProfileController::class, 'show']);
+   
+ Route::put('/account/profile', [AccountProfileController::class, 'update']);
+ 
 
       
               
@@ -91,8 +115,11 @@ Route::middleware([ForceJwtFromCookie::class,'auth:api'])->group(function () {
 
 
 
-
+   
  
+
+
+
 
  
 Route::controller(ProductDepartmentController::class)->group(function () {

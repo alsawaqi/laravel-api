@@ -28,9 +28,31 @@ class CustomersContact extends Model
         'District_Id'
     ];
 
+
+
+
+       public function customer()
+    {
+        return $this->belongsTo(CustomersMaster::class, 'Customers_Contact_Id', 'id');
+    }
+
+
     public function country()
     {
         return $this->belongsTo(Country::class, 'Country_Id');
+    }
+
+
+
+    public function region()
+    {
+        return $this->belongsTo(Region::class, 'Region_Id');
+    }
+
+
+    public function district()
+    {
+        return $this->belongsTo(District::class, 'District_Id');
     }
 
     public function state()

@@ -26,14 +26,19 @@ class CustomersContactController extends Controller
 
     public function index()
         {
-            $contacts = CustomersContact::with(['country', 'state', 'city'])->latest()->get();
+            $contacts = CustomersContact::with(['country', 'region', 'district', 'city'])
+                                          ->where('Customers_Contact_Id', Auth::user()?->customers->id)
+                                          ->latest()
+                                          ->get();
             return response()->json($contacts);
         }
 
 
         public function show($id)
             {
-                $contact = CustomersContact::with(['country', 'state', 'city'])->findOrFail($id);
+                $contact = CustomersContact::with(['country', 'state', 'district','region', 'city'])
+                                            ->where('Customers_Contact_Id', Auth::user()?->customers->id)
+                                           ->findOrFail($id);
                 return response()->json($contact);
             }
 
@@ -81,6 +86,7 @@ class CustomersContactController extends Controller
 
        
     }
+    
 
 
 
@@ -95,5 +101,60 @@ class CustomersContactController extends Controller
     {
         return City::where('District_Id', $id)->get();
     }
+
+
+    public function update(Request $request, int $id)
+    {
+        $customer = Auth::user()?->customers;
+        if (!$customer) {
+            return response()->json(['message' => 'Unauthenticated'], 401);
+        }
+
+        $contact = CustomersContact::where('id', $id)
+            ->where('Customers_Contact_Id', $customer->id)
+            ->firstOrFail();
+
+        // Update directly from request (no validated array)
+        $updatable = [
+            'Type',
+            'Country_Id',
+            'Region_Id',
+            'District_Id',
+            'City_Id',
+            'Contact_Person_Name',
+            'Telephone',
+            'Fax',
+            'Gsm',
+            'Email',
+            'Designation',
+            'Remarks',
+        ];
+
+        $data = $request->only($updatable);
+        $contact->fill($data)->save();
+
+        return response()->json([
+            'message' => 'Address updated.',
+            'data'    => $contact->load(['country', 'region', 'district', 'city']),
+        ]);
+    }
+
+    // DELETE /api/contacts/{id}
+    public function destroy(Request $request, int $id)
+    {
+        $customer = Auth::user()?->customers;
+        if (!$customer) {
+            return response()->json(['message' => 'Unauthenticated'], 401);
+        }
+
+        $contact = CustomersContact::where('id', $id)
+            ->where('Customers_Contact_Id', $customer->id)
+            ->firstOrFail();
+
+        $contact->delete();
+
+        return response()->json(['message' => 'Address deleted.']);
+    }
+
 
 }
