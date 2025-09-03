@@ -29,6 +29,7 @@ class ProductsSubSubDepartmentController extends Controller
             'name'        => $subsub->Product_Sub_Sub_Department_Name,
             'slug'        => $subsub->Slug,
             'description' => $subsub->Product_Sub_Sub_Department_Description,
+            'view_options' => $subsub->View_Options,
             'image'       => $subsub->Image_Path,
         ],
         'filters' => $filters,
