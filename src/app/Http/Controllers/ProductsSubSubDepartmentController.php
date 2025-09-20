@@ -37,4 +37,12 @@ class ProductsSubSubDepartmentController extends Controller
        
         
     }
+
+
+    public function slug_index(string $slug)
+     {
+            $subsub = ProductsSubSubDepartment::where('Slug', $slug)->firstOrFail();
+                
+            return response()->json($subsub->id);
+     }
 }

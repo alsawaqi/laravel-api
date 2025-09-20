@@ -111,24 +111,24 @@ class ProductsController extends Controller
 public function detail(Products $product)
 {
     try{
+                $product->load(['images','department','subdepartment','subSubDepartment']);
 
-  
-    $product->load('images');
+                $specs = ProductSpecificationProduct::with('description')
+                                                     ->where('Product_Id', $product->id)
+                                                     ->get()
+                                                     ->groupBy(fn ($item) => $item->description->name);
 
-    $specs = ProductSpecificationProduct::with('description')
-            ->where('Product_Id', $product->id)
-            ->get()
-            ->groupBy(fn ($item) => $item->description->name);
-
-    $formatted = $specs->map(function ($items, $key) {
-        return [
-            'category' => $key,
-            'values' => $items->pluck('value')->unique()->values()
-        ];
-    })->values();
+                $formatted = $specs->map(function ($items, $key) {
+                    return [
+                        'category' => $key,
+                        'values' => $items->pluck('value')->unique()->values()
+                    ];
+                })->values();
 
       }catch(\Exception $e){
-        return response()->json(['error' => $e->getMessage()], 404);
+
+             return response()->json(['error' => $e->getMessage()], 404);
+
        }
 
     return response()->json([

@@ -19,6 +19,7 @@ use App\Http\Controllers\AccountProfileController;
 use App\Http\Controllers\CustomersContactController;
 use App\Http\Controllers\ProductDepartmentController;
 use App\Http\Controllers\ProductsSubSubDepartmentController;
+use App\Http\Controllers\ProductSpecificationValueController;
 
  
 
@@ -51,62 +52,62 @@ Route::middleware([ForceJwtFromCookie::class,'auth:api'])->group(function () {
         });
 
 
-  Route::controller(OrdersPlacedController::class)->group(function () {
-        Route::post('/orders/place', 'place');
-        Route::get('/orders', 'index');
-        Route::get('/orders/{id}/details', 'getOrderDetails');
-    });
+       Route::controller(OrdersPlacedController::class)->group(function () {
+              Route::post('/orders/place', 'place');
+              Route::get('/orders', 'index');
+              Route::get('/orders/{id}/details', 'getOrderDetails');
+       });
 
 
 
-     Route::get   ('/tickets',                 [SupportTicketController::class, 'index']);
-    Route::post  ('/tickets',                 [SupportTicketController::class, 'store']);
-    Route::get   ('/tickets/{id}',            [SupportTicketController::class, 'show']);
-    Route::post  ('/tickets/{id}/reply',      [SupportTicketController::class, 'reply']);
-    Route::patch ('/tickets/{id}/close',      [SupportTicketController::class, 'close']);
-    Route::delete('/tickets/{id}',            [SupportTicketController::class, 'destroy']);
+       Route::get   ('/tickets',                 [SupportTicketController::class, 'index']);
+       Route::post  ('/tickets',                 [SupportTicketController::class, 'store']);
+       Route::get   ('/tickets/{id}',            [SupportTicketController::class, 'show']);
+       Route::post  ('/tickets/{id}/reply',      [SupportTicketController::class, 'reply']);
+       Route::patch ('/tickets/{id}/close',      [SupportTicketController::class, 'close']);
+       Route::delete('/tickets/{id}',            [SupportTicketController::class, 'destroy']);
 
 
 
-    Route::post('/v1/shipping/quotes', [ShippingQuoteController::class, 'quote']);
+       Route::post('/v1/shipping/quotes', [ShippingQuoteController::class, 'quote']);
 
 
 
-    
+       
 
 
 
-    Route::prefix('/contacts')->group(function () {
+       Route::prefix('/contacts')->group(function () {
 
-    Route::get('/', [CustomersContactController::class, 'index']);
-    Route::post('/', [CustomersContactController::class, 'store']);
-    Route::get('/by-country/{countryId}', [CustomersContactController::class, 'byCountry']);
-    Route::get('/by-state/{stateId}', [CustomersContactController::class, 'byState']);
-    Route::get('/{id}', [CustomersContactController::class, 'show']);
-    Route::put('/{id}', [CustomersContactController::class, 'update']);
-    Route::delete('/{id}', [CustomersContactController::class, 'destroy']);
-
-
-
-
-  });
-
-
-    Route::put('/contacts/{id}', [CustomersContactController::class, 'update']);     // PUT
-    Route::delete('/contacts/{id}', [CustomersContactController::class, 'destroy']); 
+       Route::get('/', [CustomersContactController::class, 'index']);
+       Route::post('/', [CustomersContactController::class, 'store']);
+       Route::get('/by-country/{countryId}', [CustomersContactController::class, 'byCountry']);
+       Route::get('/by-state/{stateId}', [CustomersContactController::class, 'byState']);
+       Route::get('/{id}', [CustomersContactController::class, 'show']);
+       Route::put('/{id}', [CustomersContactController::class, 'update']);
+       Route::delete('/{id}', [CustomersContactController::class, 'destroy']);
 
 
 
-  Route::controller(CustomersContactController::class)->group(function () {
-       Route::get('/countries', 'countries_index');
-  });
-        
+
+       });
 
 
-   Route::get('/account/profile', [AccountProfileController::class, 'show']);
-   
- Route::put('/account/profile', [AccountProfileController::class, 'update']);
- 
+       Route::put('/contacts/{id}', [CustomersContactController::class, 'update']);     // PUT
+       Route::delete('/contacts/{id}', [CustomersContactController::class, 'destroy']); 
+
+
+
+       Route::controller(CustomersContactController::class)->group(function () {
+              Route::get('/countries', 'countries_index');
+       });
+              
+
+
+       Route::get('/account/profile', [AccountProfileController::class, 'show']);
+       
+       Route::put('/account/profile', [AccountProfileController::class, 'update']);
+       
 
       
               
@@ -145,7 +146,15 @@ Route::controller(DistrictController::class)->group(function () {
 
 Route::controller(ProductsSubSubDepartmentController::class)->group(function () {
        Route::get('/subsubdepartments/{slug}', 'index');
+       Route::get('/subsubdepartments/slug/{slug}', 'slug_index');
        
+});
+
+
+
+Route::controller(ProductSpecificationValueController::class)->group(function () {
+       Route::get('/products/value/{subsub:slug}', 'index');
+
 });
 
 Route::controller(ProductBrandsController::class)->group(function () {

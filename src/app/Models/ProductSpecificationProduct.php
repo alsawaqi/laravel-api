@@ -19,10 +19,10 @@ class ProductSpecificationProduct extends Model
         }
 
          public function specValue()
-    {
+         {
         return $this->belongsTo(
             ProductSpecificationValue::class,
             'product_specification_value_id'
         );
-    }
+       }
 }

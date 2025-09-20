@@ -36,6 +36,17 @@ class Products extends Model
     }
 
 
+        public function department()
+    {
+        return $this->belongsTo(ProductDepartment::class, 'Product_Department_Id');
+    }
+
+
+    public function subdepartment()
+    {
+        return $this->belongsTo(ProductSubDepartment::class, 'Product_Sub_Department_Id');
+    }
+
     public function subSubDepartment()
     {
         return $this->belongsTo(ProductsSubSubDepartment::class, 'Product_Sub_Sub_Department_Id');
@@ -45,7 +56,7 @@ class Products extends Model
 
 
     // App\Models\Products (Products_Master_T)
-     public function specifications()
+    public function specifications()
     {
         return $this->hasMany(
             ProductSpecificationProduct::class,
