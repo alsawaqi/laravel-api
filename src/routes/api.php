@@ -10,12 +10,15 @@ use App\Http\Controllers\RegionController;
 use App\Http\Middleware\ForceJwtFromCookie;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\DistrictController;
+use App\Http\Controllers\LoyalityController;
 use App\Http\Controllers\ProductsController;
+use App\Http\Controllers\FavoritesController;
 use App\Http\Controllers\OrdersPlacedController;
 use App\Http\Controllers\ProductBrandsController;
 use App\Http\Controllers\ShippingQuoteController;
 use App\Http\Controllers\SupportTicketController;
 use App\Http\Controllers\AccountProfileController;
+use App\Http\Controllers\LoyaltyHistoryController;
 use App\Http\Controllers\CustomersContactController;
 use App\Http\Controllers\ProductDepartmentController;
 use App\Http\Controllers\ProductsSubSubDepartmentController;
@@ -107,6 +110,17 @@ Route::middleware([ForceJwtFromCookie::class,'auth:api'])->group(function () {
        Route::get('/account/profile', [AccountProfileController::class, 'show']);
        
        Route::put('/account/profile', [AccountProfileController::class, 'update']);
+
+
+
+
+        Route::post('/favorites/{product}/toggle', [FavoritesController::class, 'toggle']);
+          Route::get('/favorites', [FavoritesController::class, 'index']); 
+
+
+
+          Route::get('/loyalty/points', [LoyaltyHistoryController::class, 'index']);
+          Route::get('/loyalty', [LoyalityController::class, 'index']);
        
 
       

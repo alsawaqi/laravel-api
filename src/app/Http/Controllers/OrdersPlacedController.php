@@ -6,6 +6,7 @@ use Illuminate\Support\Str;
 use App\Models\OrdersPlaced;
 use Illuminate\Http\Request;
 use App\Helpers\CodeGenerator;
+use App\Models\LoyalityPoints;
 use Illuminate\Support\Facades\DB;
 use App\Models\OrdersPlacedDetails;
 use Illuminate\Support\Facades\Auth;
@@ -43,6 +44,7 @@ class OrdersPlacedController extends Controller
             'cart_items.*.quantity' => 'required|integer|min:1',
             'cart_items.*.price' => 'required|numeric',
             'cart_items.*.subtotal' => 'required|numeric',
+            'VAT' => 'nullable|numeric',
 
             // NEW: shipping option from quotes
             'shipping_option' => 'nullable|array',
@@ -77,8 +79,8 @@ class OrdersPlacedController extends Controller
                 'Customers_Id'           => $customer->id,
                 'Total_Price'            => $totalPrice,
                 'Status'                 => 'pending',
-
-               
+                'VAT'                    => $validated['VAT'] ?? 0,
+                
                 'Shippers_Id'            => $shipping['shipper_id'] ?? null,
                 'Shippers_Destination_Id' => $shipping['destination_id'] ?? null,
                 'Shipping_Basis'         => $shipping['basis'] ?? null,
@@ -91,6 +93,42 @@ class OrdersPlacedController extends Controller
                 'updated_at'             => now(),
             ]);
 
+
+            $loyalitypoints = LoyalityPoints::first();
+
+             $loyalty = DB::table('Customers_Loyalty_T')->where('Customer_Id', $customer->id)->first();
+
+             $pointsEarned = $loyalitypoints->Point * $totalPrice;
+
+
+             $Customers_Loyalty_Code = CodeGenerator::createCode('LOYCODE', 'Customers_Loyalty_T', 'Customers_Loyalty_Code');
+
+            if ($loyalty) {
+                // Update existing loyalty record
+                DB::table('Customers_Loyalty_T')->where('Customer_Id', $customer->id)->update([
+                    'Points_Earned' => DB::raw('Points_Earned + ' . $pointsEarned),
+                    'updated_at' => now(),
+                ]);
+           } else {
+                // Create new loyalty record
+                DB::table('Customers_Loyalty_T')->insert([
+                    'Customers_Loyalty_Code' => $Customers_Loyalty_Code,
+                    'Customer_Id' => $customer->id,
+                    'Points_Earned' => $pointsEarned,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
+
+            DB::table('Customers_Loyalty_Transactions_T')->insert([
+                'Loyalty_Transaction_Code' => CodeGenerator::createCode('LOYTRANS', 'Customers_Loyalty_Transactions_T', 'Loyalty_Transaction_Code'),
+                'Customer_Id' => $customer->id,
+                'Orders_Placed_Id' => $orderId,
+                'Points_Earned' => $pointsEarned,
+                'Points_Redeemed' => 0,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
 
             $transactionHeaderCode = CodeGenerator::createCode('TRANS', 'Sales_Transaction_Header_T', 'Sales_Transaction_Header_code');
 

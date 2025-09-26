@@ -47,4 +47,10 @@ class User extends Authenticatable implements JWTSubject
     {
         return $this->hasOne(CustomersMaster::class, 'User_Id', 'id');
     }
+
+
+    public function customerOrCreate(): CustomersMaster
+    {
+        return $this->customers()->firstOrCreate(['User_Id' => $this->id]);
+    }
 }

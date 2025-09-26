@@ -11,11 +11,22 @@ class Products extends Model
     protected $table = 'Products_Master_T';
 
 
+    public function favoritedBy()
+{
+    // products ↔ users via Favorites_Master_T
+    return $this->belongsToMany(
+        CustomersMaster::class,            // or Customer::class
+        'Favorites_Master_T',
+        'Products_Id',
+        'Customers_Id'
+    )->withTimestamps();
+}
+
 
     public function getSlugOptions(): SlugOptions
       {
         return SlugOptions::create()
-            ->generateSlugsFrom('name')
+            ->generateSlugsFrom('Product_Name')
             ->saveSlugsTo('slug');
      }
 
