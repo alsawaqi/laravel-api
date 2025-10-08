@@ -76,7 +76,7 @@ Route::middleware([ForceJwtFromCookie::class,'auth:api'])->group(function () {
 
 
 
-       
+      
 
 
 
@@ -176,6 +176,7 @@ Route::controller(ProductBrandsController::class)->group(function () {
 });
 
 Route::controller(ProductsController::class)->group(function () {
+        Route::get('/search/products', 'index');
         Route::get('/products/{subsub:slug}', 'show');
         Route::get('/products/details/{product:slug}', 'detail');
 });

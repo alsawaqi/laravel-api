@@ -4,13 +4,35 @@ namespace App\Http\Controllers;
 
 use App\Models\Products;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use App\Models\ProductsSubSubDepartment;
 use App\Models\ProductSpecificationProduct;
 use App\Models\ProductSpecificationDescription;
 
 class ProductsController extends Controller
 {
-    //
+ 
+     public function index(Request $request)
+    {
+        $q = trim((string) $request->query('q', ''));
+        $limit = min((int) $request->query('limit', 10), 50);
+
+        if (mb_strlen($q) < 2) {
+            return response()->json([]);
+        }
+
+        // Select the fields you need for the dropdown
+      $rows = DB::table('Products_Master_T')
+                    ->select(['id','Slug','Product_Name','Product_Sku','Product_Code'])
+                    ->where('Product_Name', 'like', "%{$q}%")
+                    ->orderBy('Product_Name')
+                    ->limit($limit)
+                    ->get();
+
+
+
+        return response()->json($rows);
+    }
 
  public function show(ProductsSubSubDepartment $subsub, Request $request)
     {
