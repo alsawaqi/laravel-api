@@ -19,7 +19,7 @@ return [
     'allowed_methods' => ['*'],
     'allowed_origins' => [
                           'http://localhost:84',
-                          'https://abdallahweb.com'
+                          'https://avinaq.com'
                          ], // Frontend URL
     'allowed_origins_patterns' => [],
     'allowed_headers' => ['*'],
