@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Shippers;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
@@ -9,7 +10,10 @@ use Illuminate\Support\Facades\DB;
 class ShippingQuoteController extends Controller
 {
 
-
+   public function index(Request $request): JsonResponse
+   {
+        return response()->json(['data' => Shippers::find($request->shipping_id)], 200);
+   }
 
     public function quote(Request $request): JsonResponse
     {

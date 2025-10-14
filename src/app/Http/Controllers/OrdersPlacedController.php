@@ -9,6 +9,7 @@ use App\Helpers\CodeGenerator;
 use App\Models\LoyalityPoints;
 use Illuminate\Support\Facades\DB;
 use App\Models\OrdersPlacedDetails;
+use App\Models\Products;
 use Illuminate\Support\Facades\Auth;
 
 class OrdersPlacedController extends Controller
@@ -32,10 +33,8 @@ class OrdersPlacedController extends Controller
 
     public function place(Request $request)
     {
- 
-        
-        $validated = $request->validate([
-            'customer_id' => 'required|integer',
+
+         $validated = $request->validate([
             'delivery_method' => 'required|in:ship,pickup',
             'shipping_cost' => 'required|numeric',
             'Customers_Contacts_Id' => 'nullable|integer',
@@ -45,8 +44,6 @@ class OrdersPlacedController extends Controller
             'cart_items.*.price' => 'required|numeric',
             'cart_items.*.subtotal' => 'required|numeric',
             'VAT' => 'nullable|numeric',
-
-            // NEW: shipping option from quotes
             'shipping_option' => 'nullable|array',
             'shipping_option.shipper_id' => 'nullable|integer',
             'shipping_option.destination_id' => 'nullable|integer',
@@ -72,15 +69,17 @@ class OrdersPlacedController extends Controller
 
             $shipping = $request->input('shipping_option', []);
 
+            $total = $request->input('total', []);
+
             $orderId = DB::table('Orders_Placed_T')->insertGetId([
                 'Order_Code'             => $orderCode,
                 'Customers_Contacts_Id'  => $request->Customers_Contacts_Id,
                 'Transaction_Number'     => $transactionNumber,
                 'Customers_Id'           => $customer->id,
-                'Total_Price'            => $totalPrice,
+                'Total_Price'            => $total['grand'],
                 'Status'                 => 'pending',
-                'VAT'                    => $validated['VAT'] ?? 0,
-                
+                'VAT'                    => $total['vat'] ?? 0,
+                'Sub_Total_Price'        => $total['subtotal'] ?? 0,
                 'Shippers_Id'            => $shipping['shipper_id'] ?? null,
                 'Shippers_Destination_Id' => $shipping['destination_id'] ?? null,
                 'Shipping_Basis'         => $shipping['basis'] ?? null,
@@ -96,12 +95,12 @@ class OrdersPlacedController extends Controller
 
             $loyalitypoints = LoyalityPoints::first();
 
-             $loyalty = DB::table('Customers_Loyalty_T')->where('Customer_Id', $customer->id)->first();
+            $loyalty = DB::table('Customers_Loyalty_T')->where('Customer_Id', $customer->id)->first();
 
-             $pointsEarned = $loyalitypoints->Point * $totalPrice;
+            $pointsEarned = $loyalitypoints->Point * $totalPrice;
 
 
-             $Customers_Loyalty_Code = CodeGenerator::createCode('LOYCODE', 'Customers_Loyalty_T', 'Customers_Loyalty_Code');
+            $Customers_Loyalty_Code = CodeGenerator::createCode('LOYCODE', 'Customers_Loyalty_T', 'Customers_Loyalty_Code');
 
             if ($loyalty) {
                 // Update existing loyalty record
@@ -109,7 +108,7 @@ class OrdersPlacedController extends Controller
                     'Points_Earned' => DB::raw('Points_Earned + ' . $pointsEarned),
                     'updated_at' => now(),
                 ]);
-           } else {
+            } else {
                 // Create new loyalty record
                 DB::table('Customers_Loyalty_T')->insert([
                     'Customers_Loyalty_Code' => $Customers_Loyalty_Code,
@@ -134,79 +133,87 @@ class OrdersPlacedController extends Controller
 
 
             $sthId = DB::table('Sales_Transaction_Header_T')->insertGetId([
-                        'Sales_Transaction_Header_code' => $transactionHeaderCode,
-                        'Bill_No'   => $transactionNumber,
-                        'created_at' => now(),
-                        'updated_at' => now(),
-                        'Orders_Placed_Id'  => $orderId,
-                      ]);
+                'Sales_Transaction_Header_code' => $transactionHeaderCode,
+                'Bill_No'   => $transactionNumber,
+                'created_at' => now(),
+                'updated_at' => now(),
+                'Orders_Placed_Id'  => $orderId,
+            ]);
 
 
 
-           $Merchant_Id = strtoupper(Str::random(10));
-           $billNumber = strtoupper(Str::random(10));
+            $Merchant_Id = strtoupper(Str::random(10));
+            $billNumber = strtoupper(Str::random(10));
 
-        $detailsCode = CodeGenerator::createCode('ORDP', 'Sales_Transactions_Details_T', 'Sales_Transactions_Details_code');
+            $detailsCode = CodeGenerator::createCode('ORDP', 'Sales_Transactions_Details_T', 'Sales_Transactions_Details_code');
 
-       
-                    $base = [
-                        'Sales_Transactions_Details_code' => $detailsCode,
-                        'Sales_Transaction_Header_Id' => $sthId,
-                        'Transaction_No'              => $transactionNumber,
-                        'Merchant_Id'                 => $Merchant_Id,                   // fill if applicable
-                        'Bill_No'                     => $billNumber,
-                 
-                        'Discount_Amount'             => 0,                      // adjust if you have discounts
-                        'VAT_Tax_Amount'              => $item['vat'] ?? 0,
-                         // same as subtotal if no discount
-                        'Transaction_Date'            => now(),
-                        'created_at'                  => now(),
-                        'updated_at'                  => now(),
-                    ];
 
-    // Payment columns common to all methods (line-level)
-    $payCols = [
-        'Payment_Method'   => $method, // 'card' | 'cod' | 'transfer'
-        'Payment_Status'   => match ($method) {
-            'card'     => 'pending_authorization',
-            'transfer' => 'pending_verification',
-            default    => 'pending_cod',
-        },
-       // line-level amount
-        'Payment_Currency' => $pay['currency'] ?? 'OMR',
-    ];
+            $base = [
+                'Sales_Transactions_Details_code' => $detailsCode,
+                'Sales_Transaction_Header_Id' => $sthId,
+                'Transaction_No'              => $transactionNumber,
+                'Merchant_Id'                 => $Merchant_Id,                   // fill if applicable
+                'Bill_No'                     => $billNumber,
 
-    // Method-specific columns
-    $specific = [];
-    if ($method === 'card') {
-        $card = $pay['card'] ?? [];
-        $specific = [
-            'Card_Brand'       => $card['brand'] ?? null,
-            'Card_Last4'       => $card['last4'] ?? null,
-            'Card_Exp_Month'   => $card['exp_month'] ?? null,
-            'Card_Exp_Year'    => $card['exp_year'] ?? null,
-            // leave gateway/txn ids null for now – fill after actual charge
-        ];
-    } elseif ($method === 'transfer') {
-        $tr = $pay['transfer'] ?? [];
-        $specific = [
-            'Transfer_Reference'  => $tr['reference'] ?? null,
-            'Transfer_Payer_Name' => $tr['payer_name'] ?? null,
-            // optionally: 'Transfer_Bank_Name' / 'Transfer_IBAN' if you collect them
-        ];
-    } else { // COD
-        $specific = [
-            'COD_Collected'    => null,
-            'COD_Collected_At' => null,
-            'COD_Note'         => null,
-        ];
-    }
+                'Discount_Amount'             => 0,                      // adjust if you have discounts
+                'VAT_Tax_Amount'              => $item['vat'] ?? 0,
+                // same as subtotal if no discount
+                'Transaction_Date'            => now(),
+                'created_at'                  => now(),
+                'updated_at'                  => now(),
+            ];
 
-    DB::table('Sales_Transactions_Details_T')->insert(array_merge($base, $payCols, $specific));
+            // Payment columns common to all methods (line-level)
+            $payCols = [
+                'Payment_Method'   => $method, // 'card' | 'cod' | 'transfer'
+                'Payment_Status'   => match ($method) {
+                    'card'     => 'pending_authorization',
+                    'transfer' => 'pending_verification',
+                    default    => 'pending_cod',
+                },
+                // line-level amount
+                'Payment_Currency' => $pay['currency'] ?? 'OMR',
+            ];
+
+            // Method-specific columns
+            $specific = [];
+            if ($method === 'card') {
+                $card = $pay['card'] ?? [];
+                $specific = [
+                    'Card_Brand'       => $card['brand'] ?? null,
+                    'Card_Last4'       => $card['last4'] ?? null,
+                    'Card_Exp_Month'   => $card['exp_month'] ?? null,
+                    'Card_Exp_Year'    => $card['exp_year'] ?? null,
+                    // leave gateway/txn ids null for now – fill after actual charge
+                ];
+            } elseif ($method === 'transfer') {
+                $tr = $pay['transfer'] ?? [];
+                $specific = [
+                    'Transfer_Reference'  => $tr['reference'] ?? null,
+                    'Transfer_Payer_Name' => $tr['payer_name'] ?? null,
+                    // optionally: 'Transfer_Bank_Name' / 'Transfer_IBAN' if you collect them
+                ];
+            } else { // COD
+                $specific = [
+                    'COD_Collected'    => null,
+                    'COD_Collected_At' => null,
+                    'COD_Note'         => null,
+                ];
+            }
+
+            DB::table('Sales_Transactions_Details_T')->insert(array_merge($base, $payCols, $specific));
 
 
             foreach ($validated['cart_items'] as $item) {
                 $orderplacecode = CodeGenerator::createCode('ORDP', 'Orders_Placed_Details_T', 'Order_Placed_Code');
+
+                //get 5 percent of price as vat
+                $vat = $item['price'] * 0.05;
+
+
+
+
+                
 
                 DB::table('Orders_Placed_Details_T')->insert([
                     'Order_Placed_Code' => $orderplacecode,
@@ -215,13 +222,16 @@ class OrdersPlacedController extends Controller
                     'Quantity'          => $item['quantity'],
                     'Price'             => $item['price'],
                     'Subtotal'          => $item['subtotal'],
-                    'Vat'               => $item['vat'] ?? 0,
+                    'Vat'               =>  $vat ?? 0,
                     'Status'            => 'pending',
                     'created_at'        => now(),
                     'updated_at'        => now(),
                 ]);
 
-     
+                
+                 $product = Products::find($item['product_id']);
+                   
+
             }
 
             DB::commit();
