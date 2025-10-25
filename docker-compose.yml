@@ -6,7 +6,9 @@ services:
     volumes:
       - /home/abdallah644/projects/my-projects/laravel-api/src:/var/www/html
     command: >
-      sh -c "chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache && php-fpm"  
+     sh -c "chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache && php-fpm"
+
+    
     networks:
       - proxy_network
 

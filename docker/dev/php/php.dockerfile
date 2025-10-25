@@ -2,6 +2,10 @@ FROM php:8.3.7-fpm
 
 COPY docker/dev/php/opcache.ini /usr/local/etc/php/conf.d/opcache.ini
 
+
+COPY docker/prod/php/entrypoint.sh /usr/local/bin/entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
 # Install dependencies
 RUN apt-get update && apt-get install -y \
     gnupg2 \
