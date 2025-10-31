@@ -1,12 +1,16 @@
 <?php
+
 namespace App\Models;
 
+use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Tymon\JWTAuth\Contracts\JWTSubject;
+use App\Notifications\VerifyEmailCustom;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 
-class User extends Authenticatable implements JWTSubject
+
+class User extends Authenticatable implements JWTSubject, MustVerifyEmail
 {
     use HasFactory, Notifiable;
 
@@ -21,7 +25,8 @@ class User extends Authenticatable implements JWTSubject
         'User_Name',
         'email',
         'password',
-        'updated_at'
+      
+        'Email_verified_at',
     ];
 
     protected $hidden = [
@@ -29,11 +34,17 @@ class User extends Authenticatable implements JWTSubject
         'remember_token',
     ];
 
-  
+
+    protected $casts = [
+        'Email_verified_at' => 'datetime',
+    ];
+
+
+
 
     public function getJWTIdentifier()
     {
-       return $this->id;
+        return $this->id;
     }
 
     public function getJWTCustomClaims()
@@ -41,7 +52,12 @@ class User extends Authenticatable implements JWTSubject
         return [];
     }
 
-     
+
+    public function sendEmailVerificationNotification()
+    {
+        $this->notify(new VerifyEmailCustom());
+    }
+
 
     public function customers()
     {

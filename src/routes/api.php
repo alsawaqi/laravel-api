@@ -1,10 +1,12 @@
 <?php
 
+use Carbon\Carbon;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Tymon\JWTAuth\Facades\JWTAuth;
-use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\URL;
+use Illuminate\Auth\Events\Verified;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\RegionController;
 use App\Http\Middleware\ForceJwtFromCookie;
@@ -14,6 +16,7 @@ use App\Http\Controllers\LoyalityController;
 use App\Http\Controllers\ProductsController;
 use App\Http\Controllers\FavoritesController;
 use App\Http\Controllers\OrdersPlacedController;
+use App\Http\Controllers\PasswordResetController;
 use App\Http\Controllers\ProductBrandsController;
 use App\Http\Controllers\ShippingQuoteController;
 use App\Http\Controllers\SupportTicketController;
@@ -108,24 +111,86 @@ Route::middleware([ForceJwtFromCookie::class, 'auth:api'])->group(function () {
 
        Route::get('/loyalty/points', [LoyaltyHistoryController::class, 'index']);
        Route::get('/loyalty', [LoyalityController::class, 'index']);
+});
 
 
+Route::post('/email/resend-link', function (Request $request) {
 
-       
+       // validate email input
+       $request->validate([
+              'email' => ['required', 'email'],
+       ]);
+
+       // find user
+       $user = User::where('email', $request->email)->first();
+
+       // We return generic success ALWAYS to avoid leaking if an email exists or not.
+       // (This is standard security practice.)
+       if (! $user) {
+              return response()->json([
+                     'message' => 'If this email is registered, a verification link was sent.',
+              ], 200);
+       }
+
+       // If already verified, tell frontend it's already verified
+       if ($user->Email_verified_at !== null) {
+              return response()->json([
+                     'message' => 'Email already verified.',
+                     'already_verified' => true,
+              ], 200);
+       }
+
+       // Send again using our custom notification
+       $user->sendEmailVerificationNotification();
+
+       return response()->json([
+              'message' => 'Verification link sent.',
+              'already_verified' => false,
+       ], 200);
 });
 
 
 
+ Route::get('/email/verify/{id}/{hash}', function (Request $request, $id, $hash) {
+    // 1. Find the user
+    $user = User::findOrFail($id);
+
+    // 2. Hash in URL must match sha1(user email)
+    $expectedHash = sha1($user->email);
+    if (! hash_equals($expectedHash, (string) $hash)) {
+        return redirect(config('app.frontend_url') . '/verify-error?reason=hash');
+    }
+
+    // 3. Signature / expiry validation
+    if (! URL::hasValidSignature($request)) {
+        return redirect(config('app.frontend_url') . '/verify-error?reason=expired');
+    }
+
+    // 4. Already verified?
+    if (! is_null($user->Email_verified_at)) {
+        return redirect(config('app.frontend_url') . '/already-verified');
+    }
+
+    // 5. Mark verified now
+    $user->Email_verified_at = Carbon::now();
+    $user->save();
+
+    // 6. Fire event (optional, but nice for auditing / listeners)
+    event(new Verified($user));
+
+    // 7. Redirect to frontend success page
+    return redirect(config('app.frontend_url') . '/verified-success');
+})->name('verification.verify');
 
 
 
+Route::post('/forgot-password', [PasswordResetController::class, 'sendResetLink']);
+Route::post('/reset-password',  [PasswordResetController::class, 'resetPassword']);
 
 Route::controller(ShippingQuoteController::class)->group(function () {
-              Route::post('/v1/shipping/quotes',   'quote');
-              Route::get('/shipping/getshippers', 'index');
-       });
-
-
+       Route::post('/v1/shipping/quotes',   'quote');
+       Route::get('/shipping/getshippers', 'index');
+});
 
 
 
