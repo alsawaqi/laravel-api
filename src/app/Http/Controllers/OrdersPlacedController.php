@@ -34,7 +34,7 @@ class OrdersPlacedController extends Controller
     public function place(Request $request)
     {
 
-         $validated = $request->validate([
+        $validated = $request->validate([
             'delivery_method' => 'required|in:ship,pickup',
             'shipping_cost' => 'required|numeric',
             'Customers_Contacts_Id' => 'nullable|integer',
@@ -208,12 +208,7 @@ class OrdersPlacedController extends Controller
                 $orderplacecode = CodeGenerator::createCode('ORDP', 'Orders_Placed_Details_T', 'Order_Placed_Code');
 
                 //get 5 percent of price as vat
-                $vat = $item['price'] * 0.05;
-
-
-
-
-                
+                $vat = $item['subtotal'] * 0.05;
 
                 DB::table('Orders_Placed_Details_T')->insert([
                     'Order_Placed_Code' => $orderplacecode,
@@ -228,10 +223,10 @@ class OrdersPlacedController extends Controller
                     'updated_at'        => now(),
                 ]);
 
-                
-                 $product = Products::find($item['product_id']);
-                   
 
+                $product = Products::find($item['product_id']);
+                $product->Product_Stock -= $item['quantity'];
+                $product->save();
             }
 
             DB::commit();
