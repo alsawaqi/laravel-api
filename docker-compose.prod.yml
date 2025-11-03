@@ -1,12 +1,12 @@
-services:
+ services:
   laravel-app-api:
     build:
       context: .
       dockerfile: docker/prod/php/php.dockerfile
     volumes:
-      - ./src:/var/www/html  # read-only in prod (optional for security)
-      - ./src/storage:/var/www/html/storage
-      - ./src/bootstrap/cache:/var/www/html/bootstrap/cache
+      - ./src:/var/www/html:ro               # Read-only application code
+      - storage-data:/var/www/html/storage   # Writable Laravel storage
+      - cache-data:/var/www/html/bootstrap/cache  # Writable Laravel cache  
     environment:
       APP_ENV: production
       APP_DEBUG: false
@@ -16,39 +16,39 @@ services:
   nginx:
     image: nginx:1.25-alpine
     volumes:
-      - ./src:/var/www/html
+      - ./src:/var/www/html:ro
       - ./docker/prod/nginx/default.conf:/etc/nginx/conf.d/default.conf
     depends_on:
       - laravel-app-api
     networks:
       - npm_network
+   
 
+  # optional build helpers:
   composer:
     image: composer:latest
+    working_dir: /var/www/html
     volumes:
       - ./src:/var/www/html
-    working_dir: /var/www/html
     command: composer install --no-dev --optimize-autoloader
     networks:
-      - npm_network     
- 
+      - npm_network
 
   artisan:
     build:
       context: .
       dockerfile: docker/prod/artisan/artisan.dockerfile
-    volumes:
-      - ./src:/var/www/html
-    command: php artisan migrate --force 
+    working_dir: /var/www/html
+    command: php artisan migrate --force
     depends_on:
       - laravel-app-api
     networks:
-      - npm_network  
-      
-networks:
+      - npm_network
+
+ networks:
   npm_network:
     external: true
 
-volumes:
-  storage-data:
-  cache-data:   
+ volumes:
+   storage-data:
+   cache-data:    
