@@ -23,13 +23,11 @@
     networks:
       - npm_network
    
-
-  # optional build helpers:
   composer:
     image: composer:latest
-    working_dir: /var/www/html
     volumes:
       - ./src:/var/www/html
+    working_dir: /var/www/html
     command: composer install --no-dev --optimize-autoloader
     networks:
       - npm_network
@@ -38,6 +36,8 @@
     build:
       context: .
       dockerfile: docker/prod/artisan/artisan.dockerfile
+    volumes:
+      - ./src:/var/www/html  
     working_dir: /var/www/html
     command: php artisan migrate --force
     depends_on:
