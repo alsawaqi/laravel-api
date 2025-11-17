@@ -2,6 +2,9 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\User;
+use App\Models\Products;
+use App\Events\OrderPlaced;
 use Illuminate\Support\Str;
 use App\Models\OrdersPlaced;
 use Illuminate\Http\Request;
@@ -9,8 +12,10 @@ use App\Helpers\CodeGenerator;
 use App\Models\LoyalityPoints;
 use Illuminate\Support\Facades\DB;
 use App\Models\OrdersPlacedDetails;
-use App\Models\Products;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Auth;
+use App\Models\ConxDatabaseNotification;
+use App\Notifications\NewOrderNotification;
 
 class OrdersPlacedController extends Controller
 {
@@ -91,6 +96,30 @@ class OrdersPlacedController extends Controller
                 'created_at'             => now(),
                 'updated_at'             => now(),
             ]);
+
+
+
+            try {
+                ConxDatabaseNotification::create([
+                    'type'            => 'App\\Notifications\\NewOrder',
+                    'notifiable_type' => 'App\\Models\\Admin',
+                    'notifiable_id'   => 1, // admin ID (or change to proper admin)
+                    'data'            => [
+                        'title'    => 'New Order Has Been Created',
+                        'message'  => 'Order ' . $orderCode . ' has been created.',
+                        'order_id' => $orderId,
+                        'url'      => '/orders/' . $orderId,
+                    ],
+                ]);
+            } catch (\Throwable $notifyException) {
+                // IMPORTANT: Do NOT throw – we don't want order placement to fail
+                Log::error('Failed to create admin notification or send Beams push', [
+                    'order_id'  => $orderId,
+                    'error'     => $notifyException->getMessage(),
+                    'exception' => $notifyException,
+                ]);
+            }
+
 
 
             $loyalitypoints = LoyalityPoints::first();
@@ -230,6 +259,17 @@ class OrdersPlacedController extends Controller
             }
 
             DB::commit();
+
+
+
+            try {
+                event(new OrderPlaced($orderId, $orderCode, (float) ($total['grand'] ?? 0)));
+            } catch (\Throwable $e) {
+                Log::error('Pusher broadcast failed', [
+                    'order_id' => $orderId,
+                    'error'    => $e->getMessage(),
+                ]);
+            }
 
             return response()->json([
                 'message' => 'Order placed successfully',

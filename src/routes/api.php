@@ -2,19 +2,24 @@
 
 use Carbon\Carbon;
 use App\Models\User;
+use App\Events\OrderCreated;
 use Illuminate\Http\Request;
 use Tymon\JWTAuth\Facades\JWTAuth;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Auth\Events\Verified;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
+use App\Events\AdminNotificationCreated;
+use App\Models\ConxDatabaseNotification;
 use App\Http\Controllers\RegionController;
 use App\Http\Middleware\ForceJwtFromCookie;
+use App\Notifications\NewOrderNotification;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\DistrictController;
 use App\Http\Controllers\LoyalityController;
 use App\Http\Controllers\ProductsController;
 use App\Http\Controllers\FavoritesController;
+use App\Services\NotificationBroadcastService;
 use App\Http\Controllers\OrdersPlacedController;
 use App\Http\Controllers\PasswordResetController;
 use App\Http\Controllers\ProductBrandsController;
@@ -26,6 +31,58 @@ use App\Http\Controllers\CustomersContactController;
 use App\Http\Controllers\ProductDepartmentController;
 use App\Http\Controllers\ProductsSubSubDepartmentController;
 use App\Http\Controllers\ProductSpecificationValueController;
+
+
+Route::get('/test-user-broadcast', function () {
+
+
+         $order = ['id' => 101, 'item' => 'Sample Product', 'amount' => 49.99];
+
+          // Create notification
+        $notification = ConxDatabaseNotification::create([
+            'type' => 'order_created',
+            'notifiable_type' => 'admin', // or your admin model
+            'notifiable_id' => 1, // admin user ID or get dynamically
+            'data' => json_encode([
+                'message' => 'New order created',
+                'order_id' => $order['id'],
+                'user_name' => 's',
+                'created_at' => now()->toDateTimeString(),
+            ]),
+        ]);
+
+        // Broadcast event
+        broadcast(new OrderCreated($order, $notification));
+
+        return response()->json([
+            'message' => 'Order created successfully',
+            'order' => $order
+        ]);
+   
+});
+
+
+
+Route::get('/test-broadcast', function () {
+
+ $admin = User::find(1);
+
+    if ($admin) {
+        // 1) save to notifications table + broadcast (Laravel style)
+      $notification =  $admin->notify(new NewOrderNotification([
+            'id' => 123,
+            'customer_name' => 'From USER API',
+            'total' => 99,
+        ]));
+
+       }
+
+    // Broadcast to admin
+    app(NotificationBroadcastService::class)->sendToAdmin($notification);
+
+    return response()->json(['success' => true]);
+});
+
 
 
 
@@ -151,35 +208,35 @@ Route::post('/email/resend-link', function (Request $request) {
 
 
 
- Route::get('/email/verify/{id}/{hash}', function (Request $request, $id, $hash) {
-    // 1. Find the user
-    $user = User::findOrFail($id);
+Route::get('/email/verify/{id}/{hash}', function (Request $request, $id, $hash) {
+       // 1. Find the user
+       $user = User::findOrFail($id);
 
-    // 2. Hash in URL must match sha1(user email)
-    $expectedHash = sha1($user->email);
-    if (! hash_equals($expectedHash, (string) $hash)) {
-        return redirect(config('app.frontend_url') . '/verify-error?reason=hash');
-    }
+       // 2. Hash in URL must match sha1(user email)
+       $expectedHash = sha1($user->email);
+       if (! hash_equals($expectedHash, (string) $hash)) {
+              return redirect(config('app.frontend_url') . '/verify-error?reason=hash');
+       }
 
-    // 3. Signature / expiry validation
-    if (! URL::hasValidSignature($request)) {
-        return redirect(config('app.frontend_url') . '/verify-error?reason=expired');
-    }
+       // 3. Signature / expiry validation
+       if (! URL::hasValidSignature($request)) {
+              return redirect(config('app.frontend_url') . '/verify-error?reason=expired');
+       }
 
-    // 4. Already verified?
-    if (! is_null($user->Email_verified_at)) {
-        return redirect(config('app.frontend_url') . '/already-verified');
-    }
+       // 4. Already verified?
+       if (! is_null($user->Email_verified_at)) {
+              return redirect(config('app.frontend_url') . '/already-verified');
+       }
 
-    // 5. Mark verified now
-    $user->Email_verified_at = Carbon::now();
-    $user->save();
+       // 5. Mark verified now
+       $user->Email_verified_at = Carbon::now();
+       $user->save();
 
-    // 6. Fire event (optional, but nice for auditing / listeners)
-    event(new Verified($user));
+       // 6. Fire event (optional, but nice for auditing / listeners)
+       event(new Verified($user));
 
-    // 7. Redirect to frontend success page
-    return redirect(config('app.frontend_url') . '/verified-success');
+       // 7. Redirect to frontend success page
+       return redirect(config('app.frontend_url') . '/verified-success');
 })->name('verification.verify');
 
 

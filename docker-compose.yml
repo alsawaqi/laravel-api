@@ -22,6 +22,23 @@ services:
     networks:
       - proxy_network
 
+  # reverb:
+  #   build:
+  #     context: .
+  #     dockerfile: docker/dev/php/php.dockerfile
+  #   working_dir: /var/www/html
+  #   command: php artisan reverb:start --host=0.0.0.0 --port=8080
+  #   volumes:
+  #     - /home/abdallah644/projects/my-projects/laravel-api/src:/var/www/html
+  #   env_file:
+  #     - ./src/.env
+  #   depends_on:
+  #     - laravel-app-api
+  #   networks:
+  #     - proxy_network
+  #   ports:
+  #     - "8081:8080" 
+ 
   artisan:
     build:
       context: /home/abdallah644/projects/my-projects/laravel-api/src

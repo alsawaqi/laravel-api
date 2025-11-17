@@ -69,4 +69,11 @@ class User extends Authenticatable implements JWTSubject, MustVerifyEmail
     {
         return $this->customers()->firstOrCreate(['User_Id' => $this->id]);
     }
+
+
+     public function notifications()
+    {
+        return $this->morphMany(ConxDatabaseNotification::class, 'notifiable')
+            ->orderBy('created_at', 'desc');
+    }
 }

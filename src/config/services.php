@@ -18,6 +18,12 @@ return [
         'token' => env('POSTMARK_TOKEN'),
     ],
 
+
+    'pusher_beams' => [
+    'instance_id' => env('PUSHER_BEAMS_INSTANCE_ID'),
+    'secret_key'  => env('PUSHER_BEAMS_SECRET_KEY'),
+],
+
     'ses' => [
         'key' => env('AWS_ACCESS_KEY_ID'),
         'secret' => env('AWS_SECRET_ACCESS_KEY'),
