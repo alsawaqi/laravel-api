@@ -12,30 +12,31 @@ class Products extends Model
 
 
     public function favoritedBy()
-{
-    // products ↔ users via Favorites_Master_T
-    return $this->belongsToMany(
-        CustomersMaster::class,            // or Customer::class
-        'Favorites_Master_T',
-        'Products_Id',
-        'Customers_Id'
-    )->withTimestamps();
-}
+    {
+        // products ↔ users via Favorites_Master_T
+        return $this->belongsToMany(
+            CustomersMaster::class,            // or Customer::class
+            'Favorites_Master_T',
+            'Products_Id',
+            'Customers_Id'
+        )->withTimestamps();
+    }
 
 
     public function getSlugOptions(): SlugOptions
-      {
+    {
         return SlugOptions::create()
             ->generateSlugsFrom('Product_Name')
             ->saveSlugsTo('slug');
-     }
+    }
 
     public function getRouteKeyName()
-     {
+    {
         return 'slug';
-     }
+    }
 
 
+   
     public function images()
     {
         return $this->hasMany(ProductsImage::class, 'Products_Id', 'id');
@@ -47,7 +48,7 @@ class Products extends Model
     }
 
 
-        public function department()
+    public function department()
     {
         return $this->belongsTo(ProductDepartment::class, 'Product_Department_Id');
     }
@@ -63,9 +64,13 @@ class Products extends Model
         return $this->belongsTo(ProductsSubSubDepartment::class, 'Product_Sub_Sub_Department_Id');
     }
 
-   
 
+    public function customercart()
+    {
+        return $this->hasMany(CustomerCart::class,'Products_Id','id');
+    }
 
+    
     // App\Models\Products (Products_Master_T)
     public function specifications()
     {

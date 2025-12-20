@@ -6,10 +6,13 @@ use App\Models\User;
 use App\Models\Products;
 use App\Events\OrderPlaced;
 use Illuminate\Support\Str;
+use App\Events\OrderCreated;
 use App\Models\OrdersPlaced;
 use Illuminate\Http\Request;
 use App\Helpers\CodeGenerator;
 use App\Models\LoyalityPoints;
+use Illuminate\Support\Carbon;
+use Illuminate\Validation\Rule;
 use Illuminate\Support\Facades\DB;
 use App\Models\OrdersPlacedDetails;
 use Illuminate\Support\Facades\Log;
@@ -21,26 +24,76 @@ class OrdersPlacedController extends Controller
 {
 
 
-    public function index()
-    {
+public function index(Request $request)
+{
+    $customer = Auth::user()?->customers;
+    if (!$customer) return response()->json(['data' => [], 'pagination' => null]);
 
-        $customer = Auth::user()?->customers;
+    $request->validate([
+        'from'     => ['nullable', 'date'],
+        'to'       => ['nullable', 'date', 'after_or_equal:from'],
+        'status'   => ['nullable', 'string', 'max:50'],
+        'q'        => ['nullable', 'string', 'max:50'],
+        'page'     => ['nullable', 'integer', 'min:1'],
+        'per_page' => ['nullable', 'integer', 'min:1', 'max:50'],
+    ]);
 
+    $perPage = (int) ($request->input('per_page', 10));
+    $perPage = max(1, min($perPage, 50));
 
+    $query = OrdersPlaced::query()
+        ->where('Customers_Id', $customer->id)
+        ->orderBy('id', 'desc');
 
-        $orders = OrdersPlaced::orderBy('id', 'desc')
-            ->where('Customers_Id', $customer->id)
-            ->get();
+    // date range
+    if ($request->filled('from') || $request->filled('to')) {
+        $from = $request->filled('from')
+            ? Carbon::parse($request->from)->startOfDay()
+            : Carbon::parse('1970-01-01')->startOfDay();
 
+        $to = $request->filled('to')
+            ? Carbon::parse($request->to)->endOfDay()
+            : Carbon::now()->endOfDay();
 
-        return response()->json($orders);
+        $query->whereBetween('created_at', [$from, $to]);
     }
+
+    // status
+    if ($request->filled('status')) {
+        $query->where('Status', $request->status);
+    }
+
+    // search
+    if ($request->filled('q')) {
+        $q = trim($request->q);
+        $query->where(function ($sub) use ($q) {
+            $sub->where('Transaction_Number', 'like', "%{$q}%")
+                ->orWhere('Order_Code', 'like', "%{$q}%");
+        });
+    }
+
+    $p = $query->paginate($perPage);
+
+    return response()->json([
+        'data' => $p->items(),
+        'pagination' => [
+            'current_page' => $p->currentPage(),
+            'last_page'    => $p->lastPage(),
+            'per_page'     => $p->perPage(),
+            'total'        => $p->total(),
+            'from'         => $p->firstItem(),
+            'to'           => $p->lastItem(),
+        ],
+    ]);
+}
 
     public function place(Request $request)
     {
 
         $validated = $request->validate([
-            'delivery_method' => 'required|in:ship,pickup',
+            'delivery_method' =>  ['required', Rule::in(['ship', 'pickup'])],
+            'location_id' => ['nullable', 'integer', Rule::requiredIf($request->delivery_method === 'pickup')],
+
             'shipping_cost' => 'required|numeric',
             'Customers_Contacts_Id' => 'nullable|integer',
             'cart_items' => 'required|array|min:1',
@@ -57,6 +110,8 @@ class OrdersPlacedController extends Controller
             'shipping_option.currency' => 'nullable|string|size:3',
             'shipping_option.weight_kg' => 'nullable|numeric',
             'shipping_option.volume_cbm' => 'nullable|numeric',
+            'payment' => 'nullable|array',
+            'payment.method' => 'nullable|in:card,cod,transfer',
         ]);
 
 
@@ -81,6 +136,8 @@ class OrdersPlacedController extends Controller
                 'Customers_Contacts_Id'  => $request->Customers_Contacts_Id,
                 'Transaction_Number'     => $transactionNumber,
                 'Customers_Id'           => $customer->id,
+                'Delivery_Type' => $validated['delivery_method'],       // ✅ NEW
+                'Location_Id' => $validated['location_id'] ?? null,
                 'Total_Price'            => $total['grand'],
                 'Status'                 => 'pending',
                 'VAT'                    => $total['vat'] ?? 0,
@@ -172,7 +229,7 @@ class OrdersPlacedController extends Controller
 
 
             $Merchant_Id = strtoupper(Str::random(10));
-            $billNumber = strtoupper(Str::random(10));
+            $billNumber = $transactionNumber;
 
             $detailsCode = CodeGenerator::createCode('ORDP', 'Sales_Transactions_Details_T', 'Sales_Transactions_Details_code');
 
@@ -185,7 +242,8 @@ class OrdersPlacedController extends Controller
                 'Bill_No'                     => $billNumber,
 
                 'Discount_Amount'             => 0,                      // adjust if you have discounts
-                'VAT_Tax_Amount'              => $item['vat'] ?? 0,
+                'VAT_Tax_Amount' => $total['vat'] ?? 0,
+
                 // same as subtotal if no discount
                 'Transaction_Date'            => now(),
                 'created_at'                  => now(),
@@ -264,12 +322,20 @@ class OrdersPlacedController extends Controller
 
             try {
                 event(new OrderPlaced($orderId, $orderCode, (float) ($total['grand'] ?? 0)));
+                event(new OrderCreated($orderId, [
+                    'title'   => 'New Order Placed',
+                    'message' => 'Order ' . $orderCode . ' has been placed.',
+                    'order_id' => $orderId,
+                ]));
             } catch (\Throwable $e) {
                 Log::error('Pusher broadcast failed', [
                     'order_id' => $orderId,
                     'error'    => $e->getMessage(),
                 ]);
             }
+
+
+
 
             return response()->json([
                 'message' => 'Order placed successfully',

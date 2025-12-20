@@ -4,11 +4,14 @@ use Carbon\Carbon;
 use App\Models\User;
 use App\Events\OrderCreated;
 use Illuminate\Http\Request;
+use App\Models\CustomersMaster;
 use Tymon\JWTAuth\Facades\JWTAuth;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Auth\Events\Verified;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\GeoController;
+use App\Http\Controllers\VatController;
 use App\Events\AdminNotificationCreated;
 use App\Models\ConxDatabaseNotification;
 use App\Http\Controllers\RegionController;
@@ -19,7 +22,9 @@ use App\Http\Controllers\DistrictController;
 use App\Http\Controllers\LoyalityController;
 use App\Http\Controllers\ProductsController;
 use App\Http\Controllers\FavoritesController;
+use App\Http\Controllers\LocationsController;
 use App\Services\NotificationBroadcastService;
+use App\Http\Controllers\CustomerCartController;
 use App\Http\Controllers\OrdersPlacedController;
 use App\Http\Controllers\PasswordResetController;
 use App\Http\Controllers\ProductBrandsController;
@@ -31,7 +36,6 @@ use App\Http\Controllers\CustomersContactController;
 use App\Http\Controllers\ProductDepartmentController;
 use App\Http\Controllers\ProductsSubSubDepartmentController;
 use App\Http\Controllers\ProductSpecificationValueController;
-
 
 Route::get('/test-user-broadcast', function () {
 
@@ -85,6 +89,16 @@ Route::get('/test-broadcast', function () {
 
 
 
+Route::middleware('auth:api')->prefix('cart')->group(function () {
+    Route::get('/', [CustomerCartController::class, 'index']);          // get DB cart
+    Route::post('/sync', [CustomerCartController::class, 'sync']);   
+    Route::post('/add', [CustomerCartController::class, 'add']);    // merge guest cart -> DB
+    Route::post('/item', [CustomerCartController::class, 'setQuantity']);    // set qty for 1 product
+    Route::delete('/item/{productId}', [CustomerCartController::class, 'remove']);
+    Route::delete('/clear', [CustomerCartController::class, 'clear']);
+});
+
+
 
 Route::middleware([ForceJwtFromCookie::class, 'auth:api'])->group(function () {
 
@@ -92,6 +106,7 @@ Route::middleware([ForceJwtFromCookie::class, 'auth:api'])->group(function () {
        Route::get('/user', function (Request $request) {
               return response()->json([
                      'user' => Auth::guard('api')->user(),
+                     'customer' => CustomersMaster::where('User_Id', Auth::guard('api')->id())->first(),
                      'data' => 'test'
 
               ]);
@@ -168,6 +183,13 @@ Route::middleware([ForceJwtFromCookie::class, 'auth:api'])->group(function () {
 
        Route::get('/loyalty/points', [LoyaltyHistoryController::class, 'index']);
        Route::get('/loyalty', [LoyalityController::class, 'index']);
+
+
+        Route::get('/cart', [CustomerCartController::class, 'index']);
+    Route::post('/cart', [CustomerCartController::class, 'addOrIncrease']);     // add item or +qty
+    Route::patch('/cart', [CustomerCartController::class, 'setQuantity']);      // set qty exact
+    Route::delete('/cart/{productId}', [CustomerCartController::class, 'remove']);
+    Route::post('/cart/merge', [CustomerCartController::class, 'merge']);    
 });
 
 
@@ -250,6 +272,10 @@ Route::controller(ShippingQuoteController::class)->group(function () {
 });
 
 
+Route::controller(VatController::class)->group(function () {
+       Route::get('/vat', 'index');
+});
+
 
 Route::controller(ProductDepartmentController::class)->group(function () {
        Route::get('/productdepartment', 'index');
@@ -268,6 +294,13 @@ Route::controller(DistrictController::class)->group(function () {
        Route::get('/district', 'index');
 });
 
+
+
+Route::get('/countries', [GeoController::class, 'countries']);
+
+Route::get('/regions/by-country/{countryId}', [GeoController::class, 'regionsByCountry']);
+Route::get('/districts/by-region/{regionId}', [GeoController::class, 'districtsByRegion']);
+Route::get('/cities/by-district/{districtId}', [GeoController::class, 'citiesByDistrict']);
 
 Route::controller(ProductsSubSubDepartmentController::class)->group(function () {
        Route::get('/subsubdepartments/{slug}', 'index');
@@ -290,6 +323,11 @@ Route::controller(ProductsController::class)->group(function () {
        Route::get('/products/details/{product:slug}', 'detail');
 });
 
+
+Route::controller(LocationsController::class)->group(function () {
+              
+       Route::get('/locations', 'index');
+}); 
 
 Route::controller(AuthController::class)->group(function () {
        Route::post('/register', 'register');
