@@ -269,6 +269,7 @@ Route::post('/reset-password',  [PasswordResetController::class, 'resetPassword'
 Route::controller(ShippingQuoteController::class)->group(function () {
        Route::post('/v1/shipping/quotes',   'quote');
        Route::get('/shipping/getshippers', 'index');
+       Route::get('/shipping/cod', 'getCodSupport');
 });
 
 

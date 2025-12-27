@@ -1,54 +1,108 @@
- services:
+services:
   laravel-app-api:
     build:
       context: .
       dockerfile: docker/prod/php/php.dockerfile
+    restart: unless-stopped
     volumes:
-      - ./src:/var/www/html:ro               # Read-only application code
-      - storage-data:/var/www/html/storage   # Writable Laravel storage
-      - cache-data:/var/www/html/bootstrap/cache  # Writable Laravel cache  
+      - ./src:/var/www/html:ro
+      - storage-data:/var/www/html/storage
+      - cache-data:/var/www/html/bootstrap/cache
     environment:
       APP_ENV: production
-      APP_DEBUG: false
+      APP_DEBUG: "false"
     networks:
       - npm_network
 
   nginx:
     image: nginx:1.25-alpine
+    restart: unless-stopped
     volumes:
       - ./src:/var/www/html:ro
-      - ./docker/prod/nginx/default.conf:/etc/nginx/conf.d/default.conf
+      - ./docker/prod/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       - laravel-app-api
     networks:
       - npm_network
-   
-  composer:
-    image: composer:latest
+
+  # ✅ Redis (remove this service if you already have a shared Redis elsewhere)
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
     volumes:
-      - ./src:/var/www/html
-    working_dir: /var/www/html
-    command: composer install --no-dev --optimize-autoloader
+      - redis-data:/data
     networks:
       - npm_network
 
+  # ✅ Queue Worker (production)
+  queue-worker:
+    build:
+      context: .
+      dockerfile: docker/prod/php/php.dockerfile
+    restart: unless-stopped
+    working_dir: /var/www/html
+    volumes:
+      - ./src:/var/www/html:ro
+      - storage-data:/var/www/html/storage
+      - cache-data:/var/www/html/bootstrap/cache
+    command: php artisan queue:work --sleep=1 --tries=3 --timeout=90
+    depends_on:
+      - laravel-app-api
+      - redis
+    networks:
+      - npm_network
+
+  # ✅ Scheduler (only if you use Laravel scheduling)
+  scheduler:
+    build:
+      context: .
+      dockerfile: docker/prod/php/php.dockerfile
+    restart: unless-stopped
+    working_dir: /var/www/html
+    volumes:
+      - ./src:/var/www/html:ro
+      - storage-data:/var/www/html/storage
+      - cache-data:/var/www/html/bootstrap/cache
+    command: php artisan schedule:work
+    depends_on:
+      - laravel-app-api
+    networks:
+      - npm_network
+
+  # ✅ Utility: run composer with SAME PHP version as app (prevents PHP 8.4 lock issues)
+  composer:
+    build:
+      context: .
+      dockerfile: docker/prod/php/php.dockerfile
+    profiles: ["tools"]
+    working_dir: /var/www/html
+    volumes:
+      - ./src:/var/www/html
+    entrypoint: ["composer"]
+    networks:
+      - npm_network
+
+  # ✅ Utility: run artisan manually (migrate, cache, etc.)
   artisan:
     build:
       context: .
-      dockerfile: docker/prod/artisan/artisan.dockerfile
-    volumes:
-      - ./src:/var/www/html  
+      dockerfile: docker/prod/php/php.dockerfile
+    profiles: ["tools"]
     working_dir: /var/www/html
-    command: php artisan migrate --force
-    depends_on:
-      - laravel-app-api
+    volumes:
+      - ./src:/var/www/html
+      - storage-data:/var/www/html/storage
+      - cache-data:/var/www/html/bootstrap/cache
+    entrypoint: ["php", "artisan"]
     networks:
       - npm_network
 
- networks:
+networks:
   npm_network:
     external: true
 
- volumes:
-   storage-data:
-   cache-data:    
+volumes:
+  storage-data:
+  cache-data:
+  redis-data:

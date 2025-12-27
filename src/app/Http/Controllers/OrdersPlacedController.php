@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\User;
 use App\Models\Products;
 use App\Events\OrderPlaced;
+use App\Mail\NewOrderEmail;
 use Illuminate\Support\Str;
 use App\Events\OrderCreated;
 use App\Models\OrdersPlaced;
@@ -17,6 +18,7 @@ use Illuminate\Support\Facades\DB;
 use App\Models\OrdersPlacedDetails;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Mail;
 use App\Models\ConxDatabaseNotification;
 use App\Notifications\NewOrderNotification;
 
@@ -24,68 +26,68 @@ class OrdersPlacedController extends Controller
 {
 
 
-public function index(Request $request)
-{
-    $customer = Auth::user()?->customers;
-    if (!$customer) return response()->json(['data' => [], 'pagination' => null]);
+    public function index(Request $request)
+    {
+        $customer = Auth::user()?->customers;
+        if (!$customer) return response()->json(['data' => [], 'pagination' => null]);
 
-    $request->validate([
-        'from'     => ['nullable', 'date'],
-        'to'       => ['nullable', 'date', 'after_or_equal:from'],
-        'status'   => ['nullable', 'string', 'max:50'],
-        'q'        => ['nullable', 'string', 'max:50'],
-        'page'     => ['nullable', 'integer', 'min:1'],
-        'per_page' => ['nullable', 'integer', 'min:1', 'max:50'],
-    ]);
+        $request->validate([
+            'from'     => ['nullable', 'date'],
+            'to'       => ['nullable', 'date', 'after_or_equal:from'],
+            'status'   => ['nullable', 'string', 'max:50'],
+            'q'        => ['nullable', 'string', 'max:50'],
+            'page'     => ['nullable', 'integer', 'min:1'],
+            'per_page' => ['nullable', 'integer', 'min:1', 'max:50'],
+        ]);
 
-    $perPage = (int) ($request->input('per_page', 10));
-    $perPage = max(1, min($perPage, 50));
+        $perPage = (int) ($request->input('per_page', 10));
+        $perPage = max(1, min($perPage, 50));
 
-    $query = OrdersPlaced::query()
-        ->where('Customers_Id', $customer->id)
-        ->orderBy('id', 'desc');
+        $query = OrdersPlaced::query()
+            ->where('Customers_Id', $customer->id)
+            ->orderBy('id', 'desc');
 
-    // date range
-    if ($request->filled('from') || $request->filled('to')) {
-        $from = $request->filled('from')
-            ? Carbon::parse($request->from)->startOfDay()
-            : Carbon::parse('1970-01-01')->startOfDay();
+        // date range
+        if ($request->filled('from') || $request->filled('to')) {
+            $from = $request->filled('from')
+                ? Carbon::parse($request->from)->startOfDay()
+                : Carbon::parse('1970-01-01')->startOfDay();
 
-        $to = $request->filled('to')
-            ? Carbon::parse($request->to)->endOfDay()
-            : Carbon::now()->endOfDay();
+            $to = $request->filled('to')
+                ? Carbon::parse($request->to)->endOfDay()
+                : Carbon::now()->endOfDay();
 
-        $query->whereBetween('created_at', [$from, $to]);
+            $query->whereBetween('created_at', [$from, $to]);
+        }
+
+        // status
+        if ($request->filled('status')) {
+            $query->where('Status', $request->status);
+        }
+
+        // search
+        if ($request->filled('q')) {
+            $q = trim($request->q);
+            $query->where(function ($sub) use ($q) {
+                $sub->where('Transaction_Number', 'like', "%{$q}%")
+                    ->orWhere('Order_Code', 'like', "%{$q}%");
+            });
+        }
+
+        $p = $query->paginate($perPage);
+
+        return response()->json([
+            'data' => $p->items(),
+            'pagination' => [
+                'current_page' => $p->currentPage(),
+                'last_page'    => $p->lastPage(),
+                'per_page'     => $p->perPage(),
+                'total'        => $p->total(),
+                'from'         => $p->firstItem(),
+                'to'           => $p->lastItem(),
+            ],
+        ]);
     }
-
-    // status
-    if ($request->filled('status')) {
-        $query->where('Status', $request->status);
-    }
-
-    // search
-    if ($request->filled('q')) {
-        $q = trim($request->q);
-        $query->where(function ($sub) use ($q) {
-            $sub->where('Transaction_Number', 'like', "%{$q}%")
-                ->orWhere('Order_Code', 'like', "%{$q}%");
-        });
-    }
-
-    $p = $query->paginate($perPage);
-
-    return response()->json([
-        'data' => $p->items(),
-        'pagination' => [
-            'current_page' => $p->currentPage(),
-            'last_page'    => $p->lastPage(),
-            'per_page'     => $p->perPage(),
-            'total'        => $p->total(),
-            'from'         => $p->firstItem(),
-            'to'           => $p->lastItem(),
-        ],
-    ]);
-}
 
     public function place(Request $request)
     {
@@ -126,6 +128,8 @@ public function index(Request $request)
             $totalPrice = $itemsTotal + $validated['shipping_cost'];
 
             $customer = Auth::user()?->customers;
+
+            $user = User::find(Auth::id());
 
             $shipping = $request->input('shipping_option', []);
 
@@ -183,7 +187,7 @@ public function index(Request $request)
 
             $loyalty = DB::table('Customers_Loyalty_T')->where('Customer_Id', $customer->id)->first();
 
-            $pointsEarned = $loyalitypoints->Point * $totalPrice;
+            $pointsEarned = (int) round($loyalitypoints->Point * $totalPrice);
 
 
             $Customers_Loyalty_Code = CodeGenerator::createCode('LOYCODE', 'Customers_Loyalty_T', 'Customers_Loyalty_Code');
@@ -322,11 +326,16 @@ public function index(Request $request)
 
             try {
                 event(new OrderPlaced($orderId, $orderCode, (float) ($total['grand'] ?? 0)));
+
                 event(new OrderCreated($orderId, [
                     'title'   => 'New Order Placed',
                     'message' => 'Order ' . $orderCode . ' has been placed.',
                     'order_id' => $orderId,
                 ]));
+
+                $to = 'buzz644@yahoo.com';
+
+                Mail::to($to)->queue(new NewOrderEmail($orderCode));
             } catch (\Throwable $e) {
                 Log::error('Pusher broadcast failed', [
                     'order_id' => $orderId,

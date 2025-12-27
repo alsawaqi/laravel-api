@@ -53,6 +53,52 @@ services:
     networks:
       - proxy_network
 
+  # ✅ NEW: Redis (queue backend)
+  redis:
+    image: redis:7-alpine
+    container_name: isc-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    # Optional (only if you want to access Redis from your HOST directly)
+    ports:
+      - "6379:6379"
+    networks:
+      - proxy_network
+
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: isc-redisinsight
+    depends_on:
+      - redis
+    ports:
+      - "5540:5540"
+    volumes:
+      - redisinsight:/data
+    networks:
+      - proxy_network
+
+  # ✅ NEW: Worker (runs the queue continuously)
+  queue-worker:
+    build:
+      context: .
+      dockerfile: docker/dev/php/php.dockerfile
+    container_name: isc-queue-worker
+    restart: unless-stopped
+    volumes:
+      - /home/abdallah644/projects/my-projects/laravel-api/src:/var/www/html
+    working_dir: /var/www/html
+    command: ["php", "artisan", "queue:work", "redis", "--sleep=1", "--tries=3", "--timeout=90"]
+    depends_on:
+      - redis
+      - laravel-app-api
+    networks:
+      - proxy_network
+
+volumes:
+  redisdata:
+  redisinsight:     
+
 networks:
   proxy_network:
     external: true

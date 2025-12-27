@@ -82,6 +82,7 @@ class ShippingQuoteController extends Controller
                 ->select([
                     'm.id as shipper_id',
                     'm.Shippers_Name as shipper_name',
+                    'm.Shippers_Image_Path as shipper_image',
                     'm.Shippers_Rate_Mode as rate_mode',   // weight|volume|both (we still read it)
                     'd.id as destination_id',
                     DB::raw('COALESCE(r.Shippers_Destination_Rate_Volume,0) as flag_volume'),
@@ -197,6 +198,7 @@ class ShippingQuoteController extends Controller
                     $options[] = [
                         'shipper_id'     => $shipperId,
                         'shipper_name'   => $p->shipper_name,
+                        'shipper_image'   => $p->shipper_image,
                         'destination_id' => $destId,
                         'basis'          => 'weight',
                         'total_price'    => round($total, 3),
@@ -221,6 +223,7 @@ class ShippingQuoteController extends Controller
                     $options[] = [
                         'shipper_id'     => $shipperId,
                         'shipper_name'   => $p->shipper_name,
+                        'shipper_image'   => $p->shipper_image,
                         'destination_id' => $destId,
                         'basis'          => 'volume',
                         'total_price'    => round($total, 3),
@@ -249,6 +252,7 @@ class ShippingQuoteController extends Controller
                 return [
                     'shipper_id'     => $opt['shipper_id'],
                     'shipper_name'   => $opt['shipper_name'],
+                    'shipper_image'   => $opt['shipper_image'],
                     'basis'          => $opt['basis'],   // 'weight' | 'volume'
                     'total_price'    => $opt['total_price'],
                     'currency'       => $opt['currency'],
@@ -257,5 +261,24 @@ class ShippingQuoteController extends Controller
                 ];
             }, array_values($options)),
         ]);
+    }
+
+
+    public function getCodSupport(Request $request): JsonResponse
+    {
+        $request->validate([
+            'shipper_id' => 'required|integer|exists:Shippers_Master_T,id',
+        ]);
+
+        $shipperId = $request->integer('shipper_id');
+
+        $shipper = Shippers::find($shipperId);
+        if (!$shipper) {
+            return response()->json(['cod_supported' => false], 200);
+        }
+
+        $codSupported = (bool)($shipper->Shippers_COD ?? false);
+
+        return response()->json(['cod_supported' => $codSupported], 200);
     }
 }

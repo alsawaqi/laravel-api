@@ -19,7 +19,7 @@ class VerifyEmailCustom extends Notification
         //
     }
 
-    public function via($notifiable)
+    public function via(object $notifiable): array
     {
         return ['mail'];
     }
