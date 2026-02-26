@@ -10,6 +10,10 @@ mkdir -p /var/www/html/storage/logs \
 
 touch /var/www/html/storage/logs/laravel.log
 
-# No recursive chown here (we already baked correct perms in the image)
+# FIX: mounted volumes need runtime permissions
+if [ "$(id -u)" = "0" ]; then
+  chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache || true
+  chmod -R ug+rwX /var/www/html/storage /var/www/html/bootstrap/cache || true
+fi
 
 exec "$@"
