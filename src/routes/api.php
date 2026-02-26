@@ -36,6 +36,7 @@ use App\Http\Controllers\CustomersContactController;
 use App\Http\Controllers\ProductDepartmentController;
 use App\Http\Controllers\ProductsSubSubDepartmentController;
 use App\Http\Controllers\ProductSpecificationValueController;
+use App\Http\Controllers\UiSlidersController;
 
 Route::get('/test-user-broadcast', function () {
 
@@ -283,6 +284,9 @@ Route::controller(ProductDepartmentController::class)->group(function () {
        Route::get('/categories/{id}/subcategories', 'getSubCategories');
        Route::get('/subcategories/{id}/subsubcategories', 'getSubSubCategories');
 });
+
+
+Route::get('/ui-sliders', [UiSlidersController::class, 'index']);
 
 
 Route::controller(RegionController::class)->group(function () {
