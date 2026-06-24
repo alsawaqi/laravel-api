@@ -33,8 +33,8 @@ RUN apt-get update && ACCEPT_EULA=Y apt-get install -y \
     mssql-tools18
 
 # ✅ Install SQLSRV PHP extensions (after build tools)
-RUN pecl install pdo_sqlsrv sqlsrv \
-    && docker-php-ext-enable pdo_sqlsrv sqlsrv
+RUN pecl install https://pecl.php.net/get/sqlsrv-5.12.0.tgz https://pecl.php.net/get/pdo_sqlsrv-5.12.0.tgz \
+    && docker-php-ext-enable sqlsrv pdo_sqlsrv
 
 # ✅ Install default PHP extensions
 RUN docker-php-ext-install pdo opcache
