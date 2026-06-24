@@ -12,7 +12,7 @@ services:
       APP_ENV: production
       APP_DEBUG: "false"
     networks:
-      - npm_network
+      - proxy_network
 
   nginx:
     image: nginx:1.25-alpine
@@ -23,7 +23,7 @@ services:
     depends_on:
       - laravel-app-api
     networks:
-      - npm_network
+      - proxy_network
 
   # ✅ Redis (remove this service if you already have a shared Redis elsewhere)
   redis:
@@ -33,7 +33,7 @@ services:
     volumes:
       - redis-data:/data
     networks:
-      - npm_network
+      - proxy_network
 
   # ✅ Queue Worker (production)
   queue-worker:
@@ -51,7 +51,7 @@ services:
       - laravel-app-api
       - redis
     networks:
-      - npm_network
+      - proxy_network
 
   # ✅ Scheduler (only if you use Laravel scheduling)
   scheduler:
@@ -68,7 +68,7 @@ services:
     depends_on:
       - laravel-app-api
     networks:
-      - npm_network
+      - proxy_network
 
   # ✅ Utility: run composer with SAME PHP version as app (prevents PHP 8.4 lock issues)
   composer:
@@ -81,7 +81,7 @@ services:
       - ./src:/var/www/html
     entrypoint: ["composer"]
     networks:
-      - npm_network
+      - proxy_network
 
   # ✅ Utility: run artisan manually (migrate, cache, etc.)
   artisan:
@@ -96,10 +96,10 @@ services:
       - cache-data:/var/www/html/bootstrap/cache
     entrypoint: ["php", "artisan"]
     networks:
-      - npm_network
+      - proxy_network
 
 networks:
-  npm_network:
+  proxy_network:
     external: true
 
 volumes:
