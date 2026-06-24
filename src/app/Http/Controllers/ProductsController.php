@@ -3,39 +3,203 @@
 namespace App\Http\Controllers;
 
 use App\Models\Products;
+use App\Models\ProductReview;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use App\Models\ProductsSubSubDepartment;
 use App\Models\ProductSpecificationProduct;
+use App\Services\ProductDiscountService;
 use App\Models\ProductSpecificationDescription;
+use App\Support\Reviews\ProductEngagementRules;
+use App\Support\Localization\StorefrontArabicFields;
 
 class ProductsController extends Controller
 {
  
-     public function index(Request $request)
+    public function index(Request $request)
     {
         $q = trim((string) $request->query('q', ''));
-        $limit = min((int) $request->query('limit', 10), 50);
+        $limit = min(max((int) $request->query('limit', 10), 1), 50);
 
         if (mb_strlen($q) < 2) {
             return response()->json([]);
         }
 
-        // Select the fields you need for the dropdown
-      $rows = DB::table('Products_Master_T')
-                    ->select(['id','Slug','Product_Name','Product_Sku','Product_Code'])
-                    ->where('Product_Name', 'like', "%{$q}%")
-                    ->orderBy('Product_Name')
-                    ->limit($limit)
-                    ->get();
+        $contains = "%{$q}%";
+        $prefix = "{$q}%";
+        $perGroupLimit = max($limit, 10);
 
+        $categories = DB::table('Products_Sub_Sub_Department_T as ssd')
+            ->join('Products_Sub_Department_T as sd', 'sd.id', '=', 'ssd.Product_Sub_Department_Id')
+            ->join('Products_Departments_T as d', 'd.id', '=', 'sd.Products_Departments_Id')
+            ->select(StorefrontArabicFields::categorySearchSelect())
+            ->whereNotNull('ssd.Slug')
+            ->where(function ($query) use ($contains) {
+                $query->where('ssd.Product_Sub_Sub_Department_Name', 'like', $contains)
+                    ->orWhere('ssd.Product_Sub_Sub_Department_Name_Ar', 'like', $contains)
+                    ->orWhere('ssd.Product_Sub_Sub_Department_Code', 'like', $contains)
+                    ->orWhere('ssd.Slug', 'like', $contains)
+                    ->orWhere('sd.Sub_Department_Name', 'like', $contains)
+                    ->orWhere('sd.Sub_Department_Name_Ar', 'like', $contains)
+                    ->orWhere('d.Product_Department_Name_Ar', 'like', $contains)
+                    ->orWhere('d.Product_Department_Name', 'like', $contains);
+            })
+            ->orderByRaw(
+                "CASE
+                    WHEN ssd.Product_Sub_Sub_Department_Name = ? THEN 0
+                    WHEN ssd.Product_Sub_Sub_Department_Name LIKE ? THEN 1
+                    WHEN sd.Sub_Department_Name LIKE ? THEN 2
+                    WHEN d.Product_Department_Name LIKE ? THEN 3
+                    ELSE 4
+                END",
+                [$q, $prefix, $prefix, $prefix]
+            )
+            ->orderBy('ssd.Product_Sub_Sub_Department_Name')
+            ->limit($perGroupLimit)
+            ->get()
+            ->map(function ($row) use ($q) {
+                return [
+                    'Result_Type' => 'category',
+                    'id' => (int) $row->id,
+                    'Slug' => $row->Slug,
+                    'Search_Title' => $row->Product_Sub_Sub_Department_Name,
+                    'Search_Title_Ar' => $row->Product_Sub_Sub_Department_Name_Ar,
+                    'Search_Subtitle' => trim($row->Product_Department_Name . ' / ' . $row->Sub_Department_Name),
+                    'Search_Subtitle_Ar' => trim(($row->Product_Department_Name_Ar ?: $row->Product_Department_Name) . ' / ' . ($row->Sub_Department_Name_Ar ?: $row->Sub_Department_Name)),
+                    'Search_Score' => $this->searchScore($q, [
+                        $row->Product_Sub_Sub_Department_Name,
+                        $row->Product_Sub_Sub_Department_Name_Ar,
+                        $row->Product_Sub_Sub_Department_Code,
+                        $row->Slug,
+                        $row->Sub_Department_Name,
+                        $row->Sub_Department_Name_Ar,
+                        $row->Product_Department_Name,
+                        $row->Product_Department_Name_Ar,
+                    ], 0),
+                    'Image_Path' => $row->Image_Path,
+                    'Product_Sub_Sub_Department_Name' => $row->Product_Sub_Sub_Department_Name,
+                    'Product_Sub_Sub_Department_Name_Ar' => $row->Product_Sub_Sub_Department_Name_Ar,
+                    'Sub_Department_Name' => $row->Sub_Department_Name,
+                    'Sub_Department_Name_Ar' => $row->Sub_Department_Name_Ar,
+                    'Product_Department_Name' => $row->Product_Department_Name,
+                    'Product_Department_Name_Ar' => $row->Product_Department_Name_Ar,
+                    'Product_Sub_Department_Id' => (int) $row->Product_Sub_Department_Id,
+                    'Product_Department_Id' => (int) $row->Product_Department_Id,
+                    'Route_Path' => "/departments/{$row->Slug}",
+                    'Route_Query' => [
+                        'deptId' => (string) $row->Product_Department_Id,
+                        'subId' => (string) $row->Product_Sub_Department_Id,
+                        'subSubId' => (string) $row->id,
+                    ],
+                ];
+            });
 
+        $products = DB::table('Products_Master_T as p')
+            ->leftJoin('Products_Sub_Sub_Department_T as ssd', 'ssd.id', '=', 'p.Product_Sub_Sub_Department_Id')
+            ->leftJoin('Products_Sub_Department_T as sd', 'sd.id', '=', 'p.Product_Sub_Department_Id')
+            ->leftJoin('Products_Departments_T as d', 'd.id', '=', 'p.Product_Department_Id')
+            ->select(StorefrontArabicFields::productSearchSelect())
+            ->whereNotNull('p.Slug')
+            ->where(function ($query) use ($contains) {
+                $query->where('p.Product_Name', 'like', $contains)
+                    ->orWhere('p.Product_Name_Ar', 'like', $contains)
+                    ->orWhere('p.Product_Sku', 'like', $contains)
+                    ->orWhere('p.Product_Code', 'like', $contains)
+                    ->orWhere('p.Product_Description', 'like', $contains)
+                    ->orWhere('ssd.Product_Sub_Sub_Department_Name_Ar', 'like', $contains)
+                    ->orWhere('ssd.Product_Sub_Sub_Department_Name', 'like', $contains);
+            })
+            ->orderByRaw(
+                "CASE
+                    WHEN p.Product_Name = ? THEN 0
+                    WHEN p.Product_Name LIKE ? THEN 1
+                    WHEN p.Product_Sku LIKE ? THEN 2
+                    WHEN p.Product_Code LIKE ? THEN 3
+                    WHEN ssd.Product_Sub_Sub_Department_Name LIKE ? THEN 4
+                    ELSE 5
+                END",
+                [$q, $prefix, $prefix, $prefix, $prefix]
+            )
+            ->orderBy('p.Product_Name')
+            ->limit($perGroupLimit)
+            ->get()
+            ->map(function ($row) use ($q) {
+                $subtitleParts = array_filter([
+                    $row->Product_Sku ?: $row->Product_Code,
+                    $row->Product_Sub_Sub_Department_Name,
+                ]);
 
-        return response()->json($rows);
+                return [
+                    'Result_Type' => 'product',
+                    'id' => (int) $row->id,
+                    'Slug' => $row->Slug,
+                    'Product_Name' => $row->Product_Name,
+                    'Product_Name_Ar' => $row->Product_Name_Ar,
+                    'Product_Sku' => $row->Product_Sku,
+                    'Product_Code' => $row->Product_Code,
+                    'Status' => $row->Status,
+                    'Search_Title' => $row->Product_Name,
+                    'Search_Title_Ar' => $row->Product_Name_Ar,
+                    'Search_Subtitle' => implode(' / ', $subtitleParts),
+                    'Search_Subtitle_Ar' => implode(' / ', array_filter([
+                        $row->Product_Sku ?: $row->Product_Code,
+                        $row->Product_Sub_Sub_Department_Name_Ar ?: $row->Product_Sub_Sub_Department_Name,
+                    ])),
+                    'Search_Score' => $this->searchScore($q, [
+                        $row->Product_Name,
+                        $row->Product_Name_Ar,
+                        $row->Product_Sku,
+                        $row->Product_Code,
+                        $row->Product_Sub_Sub_Department_Name,
+                        $row->Product_Sub_Sub_Department_Name_Ar,
+                    ], 10),
+                    'Product_Sub_Sub_Department_Name' => $row->Product_Sub_Sub_Department_Name,
+                    'Product_Sub_Sub_Department_Name_Ar' => $row->Product_Sub_Sub_Department_Name_Ar,
+                    'Route_Path' => "/product/{$row->Slug}",
+                ];
+            });
+
+        $results = $categories
+            ->concat($products)
+            ->sort(function ($a, $b) {
+                return [$a['Search_Score'], $a['Search_Title']] <=> [$b['Search_Score'], $b['Search_Title']];
+            })
+            ->take($limit)
+            ->values();
+
+        return response()->json($results);
+    }
+
+    private function searchScore(string $term, array $fields, int $baseScore): int
+    {
+        $needle = mb_strtolower($term);
+
+        foreach ($fields as $field) {
+            if (mb_strtolower((string) $field) === $needle) {
+                return $baseScore;
+            }
+        }
+
+        foreach ($fields as $field) {
+            if (str_starts_with(mb_strtolower((string) $field), $needle)) {
+                return $baseScore + 10;
+            }
+        }
+
+        foreach ($fields as $field) {
+            if (str_contains(mb_strtolower((string) $field), $needle)) {
+                return $baseScore + 20;
+            }
+        }
+
+        return $baseScore + 99;
     }
 
  public function show(ProductsSubSubDepartment $subsub, Request $request)
     {
+        $discountService = app(ProductDiscountService::class);
+
         // Base query: products in this sub-sub department
         $products = Products::query()
             ->with(['image', 'specifications.specValue'])
@@ -78,6 +242,13 @@ class ProductsController extends Controller
             }
         }
 
+        $minPrice = $request->filled('min_price') && is_numeric($request->input('min_price'))
+            ? (float) $request->input('min_price')
+            : null;
+        $maxPrice = $request->filled('max_price') && is_numeric($request->input('max_price'))
+            ? (float) $request->input('max_price')
+            : null;
+
         // -------------------------------
         // Headers (spec descriptions)
         // -------------------------------
@@ -93,7 +264,17 @@ class ProductsController extends Controller
         // -------------------------------
         // Rows (products with spec map)
         // -------------------------------
-        $rows = $products->get()->map(function ($p) use ($descs, $descIds) {
+        $productModels = $products->get();
+        $reviewsByProduct = collect();
+        if (Schema::hasTable('Product_Reviews_T')) {
+            $reviewsByProduct = ProductReview::query()
+                ->whereIn('Products_Id', $productModels->pluck('id')->all())
+                ->where('Status', ProductEngagementRules::STATUS_APPROVED)
+                ->get()
+                ->groupBy('Products_Id');
+        }
+
+        $rows = $productModels->map(function ($p) use ($descs, $descIds, $discountService, $reviewsByProduct) {
             // group product's specs by description id
             $byDesc = $p->specifications
                 ->whereIn('Product_Specification_Description_Id', $descIds)
@@ -110,14 +291,42 @@ class ProductsController extends Controller
                 ] : null;
             }
 
+            $pricing = $discountService->priceForProduct($p);
+
             return [
                 'id'    => $p->id,
                 'name'  => $p->Product_Name,
-                'price' => (float) $p->Product_Price,
+                'name_ar'  => $p->Product_Name_Ar,
+                'Product_Name'  => $p->Product_Name,
+                'Product_Name_Ar'  => $p->Product_Name_Ar,
+                'price' => $pricing['final_price'],
+                'original_price' => $pricing['original_price'],
+                'final_price' => $pricing['final_price'],
+                'discount_amount' => $pricing['discount_amount'],
+                'has_discount' => $pricing['has_discount'],
+                'active_discount' => $pricing['discount'],
+                'review_summary' => ProductEngagementRules::ratingSummary($reviewsByProduct->get($p->id, [])),
+                'Product_Stock' => (int) ($p->Product_Stock ?? 0),
+                'Product_Code' => $p->Product_Code,
+                'Product_Sku' => $p->Product_Sku,
+                'image' => $p->image,
                 'slug'  => $p->Slug,
                 'specs' => $specMap,
             ];
         })->values();
+
+        $priceRange = [
+            'min' => $rows->min('final_price') !== null ? (float) $rows->min('final_price') : 0,
+            'max' => $rows->max('final_price') !== null ? (float) $rows->max('final_price') : 0,
+        ];
+
+        if ($minPrice !== null) {
+            $rows = $rows->filter(fn ($row) => (float) $row['final_price'] >= $minPrice)->values();
+        }
+
+        if ($maxPrice !== null) {
+            $rows = $rows->filter(fn ($row) => (float) $row['final_price'] <= $maxPrice)->values();
+        }
 
         return response()->json([
             'headers'  => $descs->map(fn ($d) => [
@@ -125,6 +334,7 @@ class ProductsController extends Controller
                 'name' => $d->Product_Specification_Description_Name,
             ])->values(),
             'products' => $rows,
+            'price_range' => $priceRange,
         ]);
     }
 
@@ -134,6 +344,7 @@ public function detail(Products $product)
 {
     try{
                 $product->load(['images','department','subdepartment','subSubDepartment']);
+                app(ProductDiscountService::class)->appendPriceAttributes($product);
 
                 $specs = ProductSpecificationProduct::with('description')
                                                      ->where('Product_Id', $product->id)
@@ -156,6 +367,14 @@ public function detail(Products $product)
     return response()->json([
         'product' => $product,
         'specifications' => $formatted,
+        'review_summary' => Schema::hasTable('Product_Reviews_T')
+            ? ProductEngagementRules::ratingSummary(
+                ProductReview::query()
+                    ->where('Products_Id', $product->id)
+                    ->where('Status', ProductEngagementRules::STATUS_APPROVED)
+                    ->get()
+            )
+            : ProductEngagementRules::ratingSummary([]),
     ]);
 
 }

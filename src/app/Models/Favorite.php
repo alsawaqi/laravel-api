@@ -3,16 +3,17 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class Favorite extends Model
 {
-    //
+    use SoftDeletes;
 
-     protected $table = 'Favorites_Master_T';
+    protected $table = 'Favorites_Master_T';
     protected $primaryKey = 'id';
     public $timestamps = true;
 
-    protected $fillable = ['Products_Id', 'Customers_Id'];
+    protected $fillable = ['Products_Id', 'Customers_Id', 'deleted_at'];
 
     public function product()
     {

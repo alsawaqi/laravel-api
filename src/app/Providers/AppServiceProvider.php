@@ -7,6 +7,8 @@ use Laravel\Sanctum\Sanctum;
 use Tymon\JWTAuth\Facades\JWTAuth;
 use Tymon\JWTAuth\Http\Parser\Cookies;
 use Illuminate\Support\ServiceProvider;
+use App\Services\Checkout\PaymentGateway;
+use App\Services\Checkout\PendingPaymentGateway;
 use App\Models\ConxDatabaseNotification;
 use Laravel\Sanctum\PersonalAccessToken;
 use App\Observers\ConxNotificationObserver;
@@ -19,7 +21,7 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        $this->app->bind(PaymentGateway::class, PendingPaymentGateway::class);
     }
 
     /**

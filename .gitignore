@@ -8,3 +8,5 @@
 /storage/framework/views/*
 /src/.env
 /src/vendor/
+.vs/
+*:Zone.Identifier

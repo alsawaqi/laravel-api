@@ -16,6 +16,13 @@ class LoyaltyHistory extends Model
         'Orders_Placed_Id',
         'Points_Earned',
         'Points_Redeemed',
+        'Redeemed_Amount',
+    ];
+
+    protected $casts = [
+        'Points_Earned' => 'integer',
+        'Points_Redeemed' => 'integer',
+        'Redeemed_Amount' => 'decimal:3',
     ];
  
 

@@ -19,7 +19,7 @@ class Products extends Model
             'Favorites_Master_T',
             'Products_Id',
             'Customers_Id'
-        )->withTimestamps();
+        )->wherePivotNull('deleted_at')->withTimestamps();
     }
 
 
@@ -68,6 +68,21 @@ class Products extends Model
     public function customercart()
     {
         return $this->hasMany(CustomerCart::class,'Products_Id','id');
+    }
+
+    public function reviews()
+    {
+        return $this->hasMany(ProductReview::class, 'Products_Id', 'id');
+    }
+
+    public function approvedReviews()
+    {
+        return $this->reviews()->where('Status', 'approved');
+    }
+
+    public function questions()
+    {
+        return $this->hasMany(ProductQuestion::class, 'Products_Id', 'id');
     }
 
     

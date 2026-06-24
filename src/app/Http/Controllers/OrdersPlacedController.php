@@ -21,8 +21,20 @@ use App\Models\OrdersPlacedDetails;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Database\QueryException;
+use App\Services\Checkout\PaymentStatus;
+use App\Services\Checkout\PaymentGateway;
+use App\Services\Checkout\StockDeduction;
+use App\Services\Checkout\CheckoutIdempotency;
+use App\Services\Checkout\ShippingQuoteSelection;
+use App\Services\Checkout\LoyaltyRedemptionCalculator;
+use App\Services\ProductDiscountService;
+use App\Services\Notifications\CustomerNotificationService;
+use App\Support\Notifications\CustomerNotificationPayload;
 use App\Models\ConxDatabaseNotification;
 use App\Notifications\NewOrderNotification;
+use InvalidArgumentException;
 
 class OrdersPlacedController extends Controller
 {
@@ -95,26 +107,56 @@ class OrdersPlacedController extends Controller
     {
         $validated = $request->validate([
             'delivery_method' => ['required', Rule::in(['ship', 'pickup'])],
-            'location_id'     => ['nullable', 'integer', Rule::requiredIf($request->delivery_method === 'pickup')],
+            'location_id'     => [
+                'nullable',
+                'integer',
+                Rule::requiredIf($request->delivery_method === 'pickup'),
+                Rule::exists('Geox_Location_Master_T', 'id'),
+            ],
 
             // keep them if you still send shipping info from UI
             'shipping_cost'   => 'required|numeric',
 
-            'Customers_Contacts_Id' => 'nullable|integer',
+            'Customers_Contacts_Id' => [
+                'nullable',
+                'integer',
+                'exists:Customers_Contact_T,id',
+                Rule::requiredIf($request->input('delivery_method') === 'ship'),
+            ],
 
             // shipping option (optional)
-            'shipping_option' => 'nullable|array',
-            'shipping_option.shipper_id'     => 'nullable|integer',
-            'shipping_option.destination_id' => 'nullable|integer',
+            'shipping_option' => [
+                'nullable',
+                'array',
+                Rule::requiredIf($request->input('delivery_method') === 'ship'),
+            ],
+            'shipping_option.shipper_id'     => [
+                'nullable',
+                'integer',
+                Rule::requiredIf($request->input('delivery_method') === 'ship'),
+            ],
+            'shipping_option.destination_id' => [
+                'nullable',
+                'integer',
+                Rule::requiredIf($request->input('delivery_method') === 'ship'),
+            ],
             'shipping_option.basis'          => 'nullable|in:weight,volume,heavy',
             'shipping_option.price'          => 'nullable|numeric',
             'shipping_option.currency'       => 'nullable|string|size:3',
             'shipping_option.weight_kg'      => 'nullable|numeric',
             'shipping_option.volume_cbm'     => 'nullable|numeric',
+            'shipping_option.quoted_at'      => 'nullable|date',
+            'shipping_option.expires_at'     => 'nullable|date',
 
             // payment
             'payment'         => 'nullable|array',
-            'payment.method'  => 'nullable|in:card,cod,transfer',
+            'payment.method'  => 'nullable|in:card,cod,transfer,loyalty',
+            'idempotency_key' => ['nullable', 'string', 'max:120'],
+
+            // loyalty redemption
+            'loyalty'             => 'nullable|array',
+            'loyalty.use_points'  => 'nullable|boolean',
+            'loyalty.points'      => 'nullable|integer|min:0',
 
             // totals from UI (OPTIONAL) - we will compute our own totals from DB cart
             'total'           => 'nullable|array',
@@ -125,6 +167,12 @@ class OrdersPlacedController extends Controller
 
         $pay = $request->input('payment', []);
         $method = $pay['method'] ?? 'cod';
+        $explicitIdempotencyKey = CheckoutIdempotency::requestKey(
+            $request->header('Idempotency-Key'),
+            $request->input('idempotency_key'),
+        );
+        $customer = null;
+        $checkoutRequestKey = $explicitIdempotencyKey;
 
         DB::beginTransaction();
 
@@ -134,7 +182,28 @@ class OrdersPlacedController extends Controller
                 throw new \Exception("Customer not found for this user.");
             }
 
+            if ($explicitIdempotencyKey) {
+                $existing = $this->findExistingCheckoutOrder($customer->id, $explicitIdempotencyKey);
+
+                if ($existing) {
+                    DB::rollBack();
+                    return $this->idempotentOrderResponse($existing);
+                }
+            }
+
             // ✅ Load cart rows from DB
+            $selectedAddress = null;
+            if ($validated['delivery_method'] === 'ship') {
+                $selectedAddress = DB::table('Customers_Contact_T')
+                    ->where('id', $validated['Customers_Contacts_Id'])
+                    ->where('Customers_Contact_Id', $customer->id)
+                    ->first();
+
+                if (!$selectedAddress) {
+                    throw new \Exception("Selected shipping address was not found for this customer.");
+                }
+            }
+
             $cartRows = CustomerCart::query()
                 ->where('Customers_Id', $customer->id)
                 ->get();
@@ -143,14 +212,28 @@ class OrdersPlacedController extends Controller
                 throw new \Exception("Cart is empty.");
             }
 
+            $checkoutRequestKey = $explicitIdempotencyKey
+                ?: CheckoutIdempotency::fingerprint($customer->id, $cartRows, $request->all());
+
+            $existing = $this->findExistingCheckoutOrder($customer->id, $checkoutRequestKey);
+
+            if ($existing) {
+                DB::rollBack();
+                return $this->idempotentOrderResponse($existing);
+            }
+
             // ✅ Preload all products
             $productIds = $cartRows->pluck('Products_Id')->unique()->values();
             $productsMap = Products::query()
                 ->whereIn('id', $productIds)
+                ->lockForUpdate()
                 ->get()
                 ->keyBy('id');
 
             // ✅ Compute totals from DB (secure)
+            $discountService = app(ProductDiscountService::class);
+            $originalItemsSubtotal = 0.0;
+            $productDiscountTotal = 0.0;
             $itemsSubtotal = 0.0;
             $itemsVat = 0.0;
 
@@ -168,14 +251,23 @@ class OrdersPlacedController extends Controller
                 $qty = (int) $cart->Quantity;
 
                 // stock validation
-                if ((int)$product->Product_Stock < $qty) {
+                try {
+                    StockDeduction::remainingAfterDeduction((int) $product->Product_Stock, $qty);
+                } catch (InvalidArgumentException) {
                     throw new \Exception("Insufficient stock for {$product->Product_Name} (ID {$product->id})");
                 }
 
-                $price = (float) ($product->Product_Price ?? 0);
+                $pricing = $discountService->priceForProduct($product);
+                $originalPrice = (float) $pricing['original_price'];
+                $price = (float) $pricing['final_price'];
+                $unitDiscount = (float) $pricing['discount_amount'];
                 $subtotal = $price * $qty;
+                $originalLineSubtotal = $originalPrice * $qty;
+                $lineDiscount = $unitDiscount * $qty;
                 $vat = $subtotal * 0.05;
 
+                $originalItemsSubtotal += $originalLineSubtotal;
+                $productDiscountTotal += $lineDiscount;
                 $itemsSubtotal += $subtotal;
                 $itemsVat += $vat;
 
@@ -198,49 +290,192 @@ class OrdersPlacedController extends Controller
                     'product_id' => $product->id,
                     'vendor_id'  => $vendorId,
                     'qty'        => $qty,
+                    'original_price' => $originalPrice,
                     'price'      => $price,
+                    'unit_discount' => $unitDiscount,
+                    'line_discount' => $lineDiscount,
+                    'discount'   => $pricing['discount'],
                     'subtotal'   => $subtotal,
                     'vat'        => $vat,
                 ];
             }
 
-            // ✅ Shipping
-            $shipping = $request->input('shipping_option', []);
-            $shippingCost = (float) ($shipping['price'] ?? ($validated['shipping_cost'] ?? 0));
+            // ✅ Fulfillment / shipping
+            // Pickup orders should never keep a stale shipping option/cost from the browser.
+            $shipping = $validated['delivery_method'] === 'ship'
+                ? $request->input('shipping_option', [])
+                : [];
+            $shippingCost = $validated['delivery_method'] === 'ship'
+                ? (float) ($shipping['price'] ?? ($validated['shipping_cost'] ?? 0))
+                : 0.0;
             $shippingCurrency = $shipping['currency'] ?? 'OMR';
+            $shippingQuote = null;
 
             // ✅ Final totals for main order
-            $grandTotal = $itemsSubtotal + $itemsVat + $shippingCost;
+            if ($validated['delivery_method'] === 'ship') {
+                $shipperId = (int) ($shipping['shipper_id'] ?? 0);
+                $destinationId = (int) ($shipping['destination_id'] ?? 0);
+
+                $activeShipperExists = DB::table('Shippers_Master_T')
+                    ->where('id', $shipperId)
+                    ->where('Shippers_Is_Active', 1)
+                    ->exists();
+
+                if (!$activeShipperExists) {
+                    throw new \Exception("Selected shipper is not available.");
+                }
+
+                $selectedDestination = DB::table('Shipper_Destinations_T')
+                    ->where('id', $destinationId)
+                    ->where('Shippers_Id', $shipperId)
+                    ->first();
+
+                if (!$selectedDestination || !$this->destinationMatchesAddress($selectedDestination, $selectedAddress)) {
+                    throw new \Exception("Selected shipper destination does not match the customer's shipping address.");
+                }
+
+                try {
+                    ShippingQuoteSelection::assertNotExpired($shipping['expires_at'] ?? null);
+                    $shippingQuote = $this->validatedShippingQuote($selectedAddress, $lines, $shipping);
+                } catch (InvalidArgumentException $exception) {
+                    throw new \Exception($exception->getMessage());
+                }
+
+                $shippingOption = $shippingQuote['option'];
+                $shippingTotals = $shippingQuote['totals'];
+                $shippingCost = (float) $shippingOption['total_price'];
+                $shippingCurrency = $shippingOption['currency'] ?? $shippingCurrency;
+                $shipping['basis'] = $shippingOption['basis'] ?? ($shipping['basis'] ?? null);
+                $shipping['price'] = $shippingCost;
+                $shipping['currency'] = $shippingCurrency;
+                $shipping['weight_kg'] = $shippingTotals['weight_kg'] ?? ($shipping['weight_kg'] ?? null);
+                $shipping['volume_cbm'] = $shippingTotals['volume_cbm'] ?? ($shipping['volume_cbm'] ?? null);
+            }
+
+            $grandTotalBeforeLoyalty = $itemsSubtotal + $itemsVat + $shippingCost;
+            $loyaltyDiscountAmount = 0.0;
+            $loyaltyPointsToRedeem = 0;
+            $loyaltyRow = DB::table('Customers_Loyalty_T')
+                ->where('Customer_Id', $customer->id)
+                ->lockForUpdate()
+                ->first();
+
+            if (!$loyaltyRow) {
+                DB::table('Customers_Loyalty_T')->insert([
+                    'Customers_Loyalty_Code' => CodeGenerator::createCode('LOYCODE', 'Customers_Loyalty_T', 'Customers_Loyalty_Code'),
+                    'Customer_Id'            => $customer->id,
+                    'Points_Earned'          => 0,
+                    'Points_Redeemed'        => 0,
+                    'created_at'             => now(),
+                    'updated_at'             => now(),
+                ]);
+
+                $loyaltyRow = DB::table('Customers_Loyalty_T')
+                    ->where('Customer_Id', $customer->id)
+                    ->lockForUpdate()
+                    ->first();
+            }
+
+            $loyaltyInput = $request->input('loyalty', []);
+            $requestedRedeemPoints = !empty($loyaltyInput['use_points'])
+                ? (int) ($loyaltyInput['points'] ?? 0)
+                : 0;
+
+            if ($requestedRedeemPoints > 0) {
+                $availablePoints = max(0, (int) (($loyaltyRow->Points_Earned ?? 0) - ($loyaltyRow->Points_Redeemed ?? 0)));
+
+                $loyaltySettings = LoyalityPoints::first();
+                $redeemRulePoints = (float) ($loyaltySettings->Redeem_Points ?? 0);
+                $redeemRuleAmount = (float) ($loyaltySettings->Redeem_Amount ?? 0);
+
+                try {
+                    $redemption = LoyaltyRedemptionCalculator::calculate(
+                        requestedPoints: $requestedRedeemPoints,
+                        availablePoints: $availablePoints,
+                        orderTotal: $grandTotalBeforeLoyalty,
+                        redeemRulePoints: $redeemRulePoints,
+                        redeemRuleAmount: $redeemRuleAmount,
+                    );
+                } catch (InvalidArgumentException) {
+                    throw new \Exception("Loyalty redemption is not configured.");
+                }
+
+                $loyaltyPointsToRedeem = $redemption['points'];
+                $loyaltyDiscountAmount = (float) $redemption['amount'];
+            }
+
+            $grandTotal = round(max($grandTotalBeforeLoyalty - $loyaltyDiscountAmount, 0), 3);
+
+            if ($grandTotal <= 0 && $loyaltyPointsToRedeem > 0) {
+                $method = 'loyalty';
+            }
+
+            if ($method === 'loyalty' && $grandTotal > 0) {
+                throw new \Exception("A payment method is required for the remaining order balance.");
+            }
+
+            $paymentStatus = PaymentStatus::initialFor($method, $grandTotal);
 
             // ✅ Create Orders_Placed_T header
             $orderCode = CodeGenerator::createCode('ORD', 'Orders_Placed_T', 'order_code');
             $transactionNumber = strtoupper(Str::random(10));
 
-            $orderId = DB::table('Orders_Placed_T')->insertGetId([
+            $orderPayload = [
                 'Order_Code'              => $orderCode,
-                'Customers_Contacts_Id'   => $request->Customers_Contacts_Id,
+                'Customers_Contacts_Id'   => $validated['delivery_method'] === 'ship'
+                    ? ($validated['Customers_Contacts_Id'] ?? null)
+                    : null,
                 'Transaction_Number'      => $transactionNumber,
                 'Customers_Id'            => $customer->id,
 
                 'Delivery_Type'           => $validated['delivery_method'],
-                'Location_Id'             => $validated['location_id'] ?? null,
+                'Location_Id'             => $validated['delivery_method'] === 'pickup'
+                    ? ($validated['location_id'] ?? null)
+                    : null,
 
                 'Total_Price'             => $grandTotal,
                 'Status'                  => 'pending',
                 'VAT'                     => $itemsVat,
                 'Sub_Total_Price'         => $itemsSubtotal,
 
-                'Shippers_Id'             => $shipping['shipper_id'] ?? null,
-                'Shippers_Destination_Id' => $shipping['destination_id'] ?? null,
-                'Shipping_Basis'          => $shipping['basis'] ?? null,
+                'Shippers_Id'             => $validated['delivery_method'] === 'ship' ? ($shipping['shipper_id'] ?? null) : null,
+                'Shippers_Destination_Id' => $validated['delivery_method'] === 'ship' ? ($shipping['destination_id'] ?? null) : null,
+                'Shipping_Basis'          => $validated['delivery_method'] === 'ship' ? ($shipping['basis'] ?? null) : null,
                 'Shipping_Price'          => $shippingCost,
                 'Shipping_Currency'       => $shippingCurrency,
-                'Shipping_Weight_Kg'      => $shipping['weight_kg'] ?? null,
-                'Shipping_Volume_Cbm'     => $shipping['volume_cbm'] ?? null,
+                'Shipping_Weight_Kg'      => $validated['delivery_method'] === 'ship' ? ($shipping['weight_kg'] ?? null) : null,
+                'Shipping_Volume_Cbm'     => $validated['delivery_method'] === 'ship' ? ($shipping['volume_cbm'] ?? null) : null,
+                'Loyalty_Points_Redeemed' => $loyaltyPointsToRedeem,
+                'Loyalty_Discount_Amount' => $loyaltyDiscountAmount,
 
                 'created_at'              => now(),
                 'updated_at'              => now(),
-            ]);
+            ];
+
+            if (Schema::hasColumn('Orders_Placed_T', 'Checkout_Request_Key')) {
+                $orderPayload['Checkout_Request_Key'] = $checkoutRequestKey;
+                $orderPayload['Checkout_Submitted_At'] = now();
+            }
+
+            if (Schema::hasColumn('Orders_Placed_T', 'Payment_Status')) {
+                $orderPayload['Payment_Status'] = $paymentStatus;
+                $orderPayload['Payment_Method'] = $method;
+            }
+
+            if (Schema::hasColumn('Orders_Placed_T', 'Shipping_Quote_Checked_At')) {
+                $orderPayload['Shipping_Quote_Checked_At'] = $shippingQuote ? now() : null;
+                $orderPayload['Shipping_Quote_Expires_At'] = $shipping['expires_at'] ?? null;
+            }
+
+            if (Schema::hasColumn('Orders_Placed_T', 'Original_Sub_Total_Price')) {
+                $orderPayload['Original_Sub_Total_Price'] = round($originalItemsSubtotal, 3);
+            }
+
+            if (Schema::hasColumn('Orders_Placed_T', 'Product_Discount_Amount')) {
+                $orderPayload['Product_Discount_Amount'] = round($productDiscountTotal, 3);
+            }
+
+            $orderId = DB::table('Orders_Placed_T')->insertGetId($orderPayload);
 
             // ✅ Admin notification (keep your logic)
             try {
@@ -263,38 +498,65 @@ class OrdersPlacedController extends Controller
                 ]);
             }
 
-            // ✅ Loyalty (same logic but use $grandTotal)
+            try {
+                app(CustomerNotificationService::class)->notifyUser(
+                    (int) Auth::id(),
+                    'customer.order_update',
+                    CustomerNotificationPayload::orderUpdate(
+                        orderId: (int) $orderId,
+                        orderCode: $orderCode,
+                        status: (string) ($orderPayload['Status'] ?? 'pending'),
+                    ),
+                );
+            } catch (\Throwable $notifyException) {
+                Log::error('Failed to create customer order notification', [
+                    'order_id' => $orderId,
+                    'customer_id' => $customer->id,
+                    'error' => $notifyException->getMessage(),
+                ]);
+            }
+
+            // ✅ Loyalty: redeem first, then earn on the payable amount
             $loyalitypoints = LoyalityPoints::first();
             if ($loyalitypoints) {
-                $pointsEarned = (int) round($loyalitypoints->Point * $grandTotal);
+                $earnAmount = (float) ($loyalitypoints->Earn_Amount ?? 1);
+                $earnPoints = (float) ($loyalitypoints->Earn_Points ?? $loyalitypoints->Point ?? 0);
+                $pointsPerOmaniRial = $earnAmount > 0
+                    ? $earnPoints / $earnAmount
+                    : (float) ($loyalitypoints->Point ?? 0);
+                $pointsEarned = (int) round($pointsPerOmaniRial * $grandTotal);
 
-                $loyalty = DB::table('Customers_Loyalty_T')->where('Customer_Id', $customer->id)->first();
-                $Customers_Loyalty_Code = CodeGenerator::createCode('LOYCODE', 'Customers_Loyalty_T', 'Customers_Loyalty_Code');
+                DB::table('Customers_Loyalty_T')->where('Customer_Id', $customer->id)->update([
+                    'Points_Earned'   => DB::raw('Points_Earned + ' . $pointsEarned),
+                    'Points_Redeemed' => DB::raw('Points_Redeemed + ' . $loyaltyPointsToRedeem),
+                    'updated_at'      => now(),
+                ]);
 
-                if ($loyalty) {
-                    DB::table('Customers_Loyalty_T')->where('Customer_Id', $customer->id)->update([
-                        'Points_Earned' => DB::raw('Points_Earned + ' . $pointsEarned),
-                        'updated_at'    => now(),
-                    ]);
-                } else {
-                    DB::table('Customers_Loyalty_T')->insert([
-                        'Customers_Loyalty_Code' => $Customers_Loyalty_Code,
-                        'Customer_Id'            => $customer->id,
-                        'Points_Earned'           => $pointsEarned,
-                        'created_at'             => now(),
-                        'updated_at'             => now(),
+                if ($loyaltyPointsToRedeem > 0) {
+                    DB::table('Customers_Loyalty_Transactions_T')->insert([
+                        'Loyalty_Transaction_Code' => CodeGenerator::createCode('LOYTRANS', 'Customers_Loyalty_Transactions_T', 'Loyalty_Transaction_Code'),
+                        'Customer_Id'              => $customer->id,
+                        'Orders_Placed_Id'         => $orderId,
+                        'Points_Earned'            => 0,
+                        'Points_Redeemed'          => $loyaltyPointsToRedeem,
+                        'Redeemed_Amount'          => $loyaltyDiscountAmount,
+                        'created_at'               => now(),
+                        'updated_at'               => now(),
                     ]);
                 }
 
-                DB::table('Customers_Loyalty_Transactions_T')->insert([
-                    'Loyalty_Transaction_Code' => CodeGenerator::createCode('LOYTRANS', 'Customers_Loyalty_Transactions_T', 'Loyalty_Transaction_Code'),
-                    'Customer_Id'              => $customer->id,
-                    'Orders_Placed_Id'         => $orderId,
-                    'Points_Earned'            => $pointsEarned,
-                    'Points_Redeemed'          => 0,
-                    'created_at'               => now(),
-                    'updated_at'               => now(),
-                ]);
+                if ($pointsEarned > 0) {
+                    DB::table('Customers_Loyalty_Transactions_T')->insert([
+                        'Loyalty_Transaction_Code' => CodeGenerator::createCode('LOYTRANS', 'Customers_Loyalty_Transactions_T', 'Loyalty_Transaction_Code'),
+                        'Customer_Id'              => $customer->id,
+                        'Orders_Placed_Id'         => $orderId,
+                        'Points_Earned'            => $pointsEarned,
+                        'Points_Redeemed'          => 0,
+                        'Redeemed_Amount'          => 0,
+                        'created_at'               => now(),
+                        'updated_at'               => now(),
+                    ]);
+                }
             }
 
             // ✅ Sales transaction header
@@ -311,6 +573,17 @@ class OrdersPlacedController extends Controller
             // ✅ Sales transactions details (keep your logic)
             $Merchant_Id = strtoupper(Str::random(10));
             $billNumber = $transactionNumber;
+            $paymentIntent = app(PaymentGateway::class)->createIntent(
+                method: $method,
+                amount: $grandTotal,
+                currency: $pay['currency'] ?? 'OMR',
+                paymentPayload: $pay,
+                context: [
+                    'order_id' => $orderId,
+                    'order_code' => $orderCode,
+                    'idempotency_key' => $checkoutRequestKey,
+                ],
+            );
 
             $detailsCode = CodeGenerator::createCode('ORDP', 'Sales_Transactions_Details_T', 'Sales_Transactions_Details_code');
 
@@ -320,7 +593,7 @@ class OrdersPlacedController extends Controller
                 'Transaction_No'                  => $transactionNumber,
                 'Merchant_Id'                     => $Merchant_Id,
                 'Bill_No'                         => $billNumber,
-                'Discount_Amount'                 => 0,
+                'Discount_Amount'                 => $loyaltyDiscountAmount,
                 'VAT_Tax_Amount'                  => $itemsVat,
                 'Transaction_Date'                => now(),
                 'created_at'                      => now(),
@@ -328,14 +601,18 @@ class OrdersPlacedController extends Controller
             ];
 
             $payCols = [
-                'Payment_Method'   => $method,
-                'Payment_Status'   => match ($method) {
-                    'card'     => 'pending_authorization',
-                    'transfer' => 'pending_verification',
-                    default    => 'pending_cod',
-                },
-                'Payment_Currency' => $pay['currency'] ?? 'OMR',
+                'Payment_Method'   => $paymentIntent->method,
+                'Payment_Status'   => $paymentIntent->status,
+                'Payment_Amount'   => $paymentIntent->amount,
+                'Payment_Currency' => $paymentIntent->currency,
             ];
+
+            if (Schema::hasColumn('Sales_Transactions_Details_T', 'Payment_Gateway')) {
+                $payCols['Payment_Gateway'] = $paymentIntent->gateway;
+                $payCols['Payment_Intent_Id'] = $paymentIntent->intentId;
+                $payCols['Payment_Idempotency_Key'] = $checkoutRequestKey;
+                $payCols['Payment_Metadata'] = json_encode($paymentIntent->metadata);
+            }
 
             $specific = [];
             if ($method === 'card') {
@@ -352,6 +629,12 @@ class OrdersPlacedController extends Controller
                     'Transfer_Reference'  => $tr['reference'] ?? null,
                     'Transfer_Payer_Name' => $tr['payer_name'] ?? null,
                 ];
+            } elseif ($method === 'loyalty') {
+                $specific = [
+                    'COD_Collected'    => null,
+                    'COD_Collected_At' => null,
+                    'COD_Note'         => null,
+                ];
             } else {
                 $specific = [
                     'COD_Collected'    => null,
@@ -367,30 +650,64 @@ class OrdersPlacedController extends Controller
 
             foreach ($vendorTotals as $vendorId => $totals) {
 
-                // shipping allocation across vendors by subtotal proportion
+                // shipping allocation across vendor order headers by subtotal proportion.
+                // Detail lines remain linked by Orders_Placed_Vendor_Id for product-level commission later.
                 $vendorShipping = 0.0;
                 if ($vendorSubTotalSum > 0) {
                     $vendorShipping = $shippingCost * ($totals['subtotal'] / $vendorSubTotalSum);
                 }
+                $vendorShipping = round($vendorShipping, 3);
 
-                $vendorOrder = OrdersPlacedVendors::create([
+                $vendorOrderPayload = [
                     'Orders_Placed_Id'   => $orderId,
                     'Vendor_Id'          => $vendorId,
                     'Vendor_Order_Code'  => CodeGenerator::createCode('VORD', 'Orders_Placed_Vendors_T', 'Vendor_Order_Code'),
 
-                    'Sub_Total'          => $totals['subtotal'],
-                    'VAT'                => $totals['vat'],
-                 
-                    'Total'              => $totals['subtotal'] + $totals['vat'],
+                    'Sub_Total'          => round($totals['subtotal'], 3),
+                    'VAT'                => round($totals['vat'], 3),
+                    'Shipping'           => $vendorShipping,
+                    'Total'              => round($totals['subtotal'] + $totals['vat'] + $vendorShipping, 3),
 
                     'Status'             => 'pending',
                     'Commission_Type'    => null,
                     'Commission_Value'   => null,
                     'Commission_Amount'  => null,
                     'Payout_Status'      => 'unpaid',
-                ]);
+                ];
+
+                if (Schema::hasColumn('Orders_Placed_Vendors_T', 'Net_Sub_Total')) {
+                    $vendorOrderPayload['Returned_Quantity'] = 0;
+                    $vendorOrderPayload['Refunded_Amount'] = 0;
+                    $vendorOrderPayload['Net_Sub_Total'] = round($totals['subtotal'], 3);
+                    $vendorOrderPayload['Adjusted_Commission_Amount'] = null;
+                    $vendorOrderPayload['Net_Payout_Amount'] = round($totals['subtotal'], 3);
+                    $vendorOrderPayload['Payout_Adjustment_Amount'] = 0;
+                }
+
+                $vendorOrder = OrdersPlacedVendors::create($vendorOrderPayload);
 
                 $vendorOrderIds[$vendorId] = $vendorOrder->id;
+
+                // ✅ Notify the vendor of their new sale (best-effort)
+                try {
+                    ConxDatabaseNotification::create([
+                        'type'            => 'App\\Notifications\\VendorNewSale',
+                        'notifiable_type' => 'App\\Models\\Vendor',
+                        'notifiable_id'   => $vendorId,
+                        'data'            => [
+                            'title'   => 'New sale',
+                            'message' => 'You have a new order (' . $vendorOrder->Vendor_Order_Code . ') totalling '
+                                . number_format((float) $vendorOrder->Total, 3) . '.',
+                            'url'     => '/orders',
+                        ],
+                    ]);
+                } catch (\Throwable $vendorNotifyException) {
+                    Log::error('Failed to create vendor sale notification', [
+                        'vendor_id' => $vendorId,
+                        'order_id'  => $orderId,
+                        'error'     => $vendorNotifyException->getMessage(),
+                    ]);
+                }
             }
 
             // ✅ Insert order details & update stock
@@ -400,7 +717,7 @@ class OrdersPlacedController extends Controller
                 $vendorId = $ln['vendor_id'];
                 $vendorOrderId = $vendorId ? ($vendorOrderIds[$vendorId] ?? null) : null;
 
-                DB::table('Orders_Placed_Details_T')->insert([
+                $detailPayload = [
                     'Order_Placed_Code'       => $orderplacecode,
                     'Orders_Placed_Id'        => $orderId,
                     'Cart_Id'                 => $ln['cart_id'],
@@ -417,13 +734,41 @@ class OrdersPlacedController extends Controller
                     'Status'                  => 'pending',
                     'created_at'              => now(),
                     'updated_at'              => now(),
-                ]);
+                ];
 
-                // Atomic stock update
-                Products::where('id', $ln['product_id'])
+                if (Schema::hasColumn('Orders_Placed_Details_T', 'Original_Unit_Price')) {
+                    $detailPayload['Original_Unit_Price'] = round($ln['original_price'], 3);
+                    $detailPayload['Discounted_Unit_Price'] = round($ln['price'], 3);
+                    $detailPayload['Product_Discount_Id'] = $ln['discount']['id'] ?? null;
+                    $detailPayload['Product_Discount_Code'] = $ln['discount']['code'] ?? null;
+                    $detailPayload['Product_Discount_Name'] = $ln['discount']['name'] ?? null;
+                    $detailPayload['Product_Discount_Type'] = $ln['discount']['type'] ?? null;
+                    $detailPayload['Product_Discount_Value'] = $ln['discount']['value'] ?? null;
+                    $detailPayload['Product_Discount_Amount'] = round($ln['unit_discount'], 3);
+                    $detailPayload['Line_Discount_Amount'] = round($ln['line_discount'], 3);
+                }
+
+                if (Schema::hasColumn('Orders_Placed_Details_T', 'Sold_Amount')) {
+                    $detailPayload['Sold_Amount'] = round($ln['subtotal'], 3);
+                    $detailPayload['Returned_Quantity'] = 0;
+                    $detailPayload['Refunded_Amount'] = 0;
+                    $detailPayload['Net_Amount'] = round($ln['subtotal'], 3);
+                    $detailPayload['Return_State'] = 'not_returned';
+                    $detailPayload['Refund_State'] = 'not_refunded';
+                }
+
+                DB::table('Orders_Placed_Details_T')->insert($detailPayload);
+
+                $affectedRows = Products::where('id', $ln['product_id'])
+                    ->where('Product_Stock', '>=', $ln['qty'])
                     ->update([
-                        'Product_Stock' => DB::raw("Product_Stock - {$ln['qty']}")
+                        'Product_Stock' => DB::raw("Product_Stock - {$ln['qty']}"),
+                        'Status' => DB::raw("CASE WHEN Product_Stock - {$ln['qty']} <= 0 THEN 'out_of_stock' ELSE Status END"),
                     ]);
+
+                if ($affectedRows !== 1) {
+                    throw new \Exception("Insufficient stock while placing order for product ID {$ln['product_id']}");
+                }
             }
 
             // ✅ Clear cart
@@ -454,10 +799,32 @@ class OrdersPlacedController extends Controller
                 'message'    => 'Order placed successfully',
                 'order_code' => $orderCode,
                 'order_id'   => $orderId,
+                'loyalty'    => [
+                    'points_redeemed' => $loyaltyPointsToRedeem,
+                    'discount_amount' => $loyaltyDiscountAmount,
+                ],
+                'totals'     => [
+                    'subtotal' => round($itemsSubtotal, 3),
+                    'original_subtotal' => round($originalItemsSubtotal, 3),
+                    'product_discount' => round($productDiscountTotal, 3),
+                    'vat' => round($itemsVat, 3),
+                    'shipping' => round($shippingCost, 3),
+                    'before_loyalty' => round($grandTotalBeforeLoyalty, 3),
+                    'grand' => round($grandTotal, 3),
+                ],
             ]);
 
         } catch (\Exception $e) {
             DB::rollBack();
+
+            if ($customer && $checkoutRequestKey && $this->isDuplicateCheckoutKeyException($e)) {
+                $existing = $this->findExistingCheckoutOrder((int) $customer->id, $checkoutRequestKey);
+
+                if ($existing) {
+                    return $this->idempotentOrderResponse($existing);
+                }
+            }
+
             return response()->json([
                 'message' => 'Order failed',
                 'error'   => $e->getMessage()
@@ -465,13 +832,452 @@ class OrdersPlacedController extends Controller
         }
     }
 
+    private function findExistingCheckoutOrder(int $customerId, ?string $checkoutRequestKey): ?object
+    {
+        if (!$checkoutRequestKey || !Schema::hasColumn('Orders_Placed_T', 'Checkout_Request_Key')) {
+            return null;
+        }
+
+        return DB::table('Orders_Placed_T')
+            ->where('Customers_Id', $customerId)
+            ->where('Checkout_Request_Key', $checkoutRequestKey)
+            ->orderByDesc('id')
+            ->first();
+    }
+
+    private function idempotentOrderResponse(object $order)
+    {
+        return response()->json([
+            'message' => 'Order already placed for this checkout request.',
+            'idempotent' => true,
+            'order_code' => $order->Order_Code ?? null,
+            'order_id' => $order->id,
+            'totals' => [
+                'grand' => isset($order->Total_Price) ? round((float) $order->Total_Price, 3) : null,
+            ],
+        ], 200);
+    }
+
+    private function isDuplicateCheckoutKeyException(\Exception $exception): bool
+    {
+        if (!$exception instanceof QueryException) {
+            return false;
+        }
+
+        $sqlState = (string) ($exception->errorInfo[0] ?? '');
+        $driverCode = (string) ($exception->errorInfo[1] ?? '');
+        $message = strtolower($exception->getMessage());
+
+        return in_array($sqlState, ['23000', '23505'], true)
+            || in_array($driverCode, ['2601', '2627', '1062'], true)
+            || str_contains($message, 'ux_orders_checkout_request_key');
+    }
+
+    /**
+     * @param list<array<string, mixed>> $lines
+     * @param array<string, mixed> $shipping
+     *
+     * @return array{option: array<string, mixed>, totals: array<string, mixed>}
+     */
+    private function validatedShippingQuote(object $selectedAddress, array $lines, array $shipping): array
+    {
+        $quoteItems = array_map(fn (array $line) => [
+            'product_id' => $line['product_id'],
+            'qty' => $line['qty'],
+        ], $lines);
+
+        $quoteRequest = Request::create('/api/v1/shipping/quotes', 'POST', [
+            'address_id' => $selectedAddress->id,
+            'items' => $quoteItems,
+        ]);
+
+        $quoteResponse = app(ShippingQuoteController::class)->quote($quoteRequest);
+        $quoteData = $quoteResponse->getData(true);
+
+        $option = ShippingQuoteSelection::match($quoteData['options'] ?? [], [
+            'shipper_id' => $shipping['shipper_id'] ?? null,
+            'destination_id' => $shipping['destination_id'] ?? null,
+            'basis' => $shipping['basis'] ?? null,
+            'price' => $shipping['price'] ?? null,
+        ]);
+
+        return [
+            'option' => $option,
+            'totals' => $quoteData['totals'] ?? [],
+        ];
+    }
+
 
     public function getOrderDetails($id)
     {
-        $orderDetails = OrdersPlacedDetails::with('product')  // assuming relation is `product()`
-            ->where('Orders_Placed_Id', $id)
-            ->get();
+        $customer = Auth::user()?->customers;
+        if (!$customer) {
+            return response()->json(['message' => 'Customer not found.'], 404);
+        }
 
-        return response()->json($orderDetails);
+        $order = DB::table('Orders_Placed_T')
+            ->where('id', $id)
+            ->where('Customers_Id', $customer->id)
+            ->first();
+
+        if (!$order) {
+            return response()->json(['message' => 'Order not found.'], 404);
+        }
+
+        $imagePick = DB::table('Products_Images_T')
+            ->select('Products_Id', DB::raw('MIN(id) as image_id'))
+            ->groupBy('Products_Id');
+
+        $itemSelect = [
+                'd.id',
+                'd.Order_Placed_Code',
+                'd.Products_Id',
+                'd.Quantity',
+                'd.Price',
+                'd.Subtotal',
+                'd.Vat',
+                'd.Status',
+                'p.Product_Name',
+                'p.Product_Code',
+                'p.Product_Sku',
+                'p.Slug',
+                'pi.Image_Path',
+            ];
+
+        if (Schema::hasColumn('Orders_Placed_Details_T', 'Original_Unit_Price')) {
+            $itemSelect = array_merge($itemSelect, [
+                'd.Original_Unit_Price',
+                'd.Discounted_Unit_Price',
+                'd.Product_Discount_Id',
+                'd.Product_Discount_Code',
+                'd.Product_Discount_Name',
+                'd.Product_Discount_Type',
+                'd.Product_Discount_Value',
+                'd.Product_Discount_Amount',
+                'd.Line_Discount_Amount',
+            ]);
+        }
+
+        $items = DB::table('Orders_Placed_Details_T as d')
+            ->leftJoin('Products_Master_T as p', 'p.id', '=', 'd.Products_Id')
+            ->leftJoinSub($imagePick, 'pi_pick', function ($join) {
+                $join->on('pi_pick.Products_Id', '=', 'p.id');
+            })
+            ->leftJoin('Products_Images_T as pi', 'pi.id', '=', 'pi_pick.image_id')
+            ->where('d.Orders_Placed_Id', $order->id)
+            ->select($itemSelect)
+            ->orderBy('d.id')
+            ->get()
+            ->map(function ($item) {
+                $unitDiscount = (float) ($item->Product_Discount_Amount ?? 0);
+                $lineDiscount = (float) ($item->Line_Discount_Amount ?? 0);
+                $originalUnit = (float) ($item->Original_Unit_Price ?? $item->Price ?? 0);
+
+                return [
+                    'id' => (int) $item->id,
+                    'order_line_code' => $item->Order_Placed_Code,
+                    'product_id' => $item->Products_Id ? (int) $item->Products_Id : null,
+                    'product_name' => $item->Product_Name,
+                    'product_code' => $item->Product_Sku ?: $item->Product_Code,
+                    'product_slug' => $item->Slug,
+                    'image_path' => $item->Image_Path,
+                    'quantity' => (int) ($item->Quantity ?? 0),
+                    'unit_price' => (float) ($item->Price ?? 0),
+                    'original_unit_price' => $originalUnit,
+                    'discounted_unit_price' => (float) ($item->Discounted_Unit_Price ?? $item->Price ?? 0),
+                    'unit_discount_amount' => $unitDiscount,
+                    'line_discount_amount' => $lineDiscount,
+                    'discount' => !empty($item->Product_Discount_Id) ? [
+                        'id' => (int) $item->Product_Discount_Id,
+                        'code' => $item->Product_Discount_Code ?? null,
+                        'name' => $item->Product_Discount_Name ?? null,
+                        'type' => $item->Product_Discount_Type ?? null,
+                        'value' => isset($item->Product_Discount_Value) ? (float) $item->Product_Discount_Value : null,
+                    ] : null,
+                    'subtotal' => (float) ($item->Subtotal ?? (($item->Price ?? 0) * ($item->Quantity ?? 0))),
+                    'vat' => (float) ($item->Vat ?? 0),
+                    'status' => $item->Status,
+                ];
+            })
+            ->values();
+
+        $transactionHeader = $this->findTransactionHeader($order);
+        $paymentRow = $transactionHeader
+            ? DB::table('Sales_Transactions_Details_T')
+                ->where('Sales_Transaction_Header_Id', $transactionHeader->id)
+                ->orderByDesc('id')
+                ->first()
+            : null;
+
+        $address = null;
+        if (!empty($order->Customers_Contacts_Id)) {
+            $address = DB::table('Customers_Contact_T')
+                ->where('id', $order->Customers_Contacts_Id)
+                ->first();
+        }
+
+        $location = null;
+        if (!empty($order->Location_Id)) {
+            $location = DB::table('Geox_Location_Master_T')
+                ->where('id', $order->Location_Id)
+                ->first();
+        }
+
+        $shipper = null;
+        if (!empty($order->Shippers_Id)) {
+            $shipper = DB::table('Shippers_Master_T')
+                ->where('id', $order->Shippers_Id)
+                ->first();
+        }
+
+        $destination = null;
+        if (!empty($order->Shippers_Destination_Id)) {
+            $destination = DB::table('Shipper_Destinations_T')
+                ->where('id', $order->Shippers_Destination_Id)
+                ->first();
+        }
+
+        $subtotal = (float) ($order->Sub_Total_Price ?? $items->sum('subtotal'));
+        $productDiscount = (float) ($order->Product_Discount_Amount ?? $items->sum('line_discount_amount'));
+        $originalSubtotal = (float) ($order->Original_Sub_Total_Price ?? ($subtotal + $productDiscount));
+        $vat = (float) ($order->VAT ?? $items->sum('vat'));
+        $shipping = (float) ($order->Shipping_Price ?? 0);
+        $loyaltyDiscount = (float) ($order->Loyalty_Discount_Amount ?? 0);
+        $totalBeforeLoyalty = round($subtotal + $vat + $shipping, 3);
+        $grandTotal = (float) ($order->Total_Price ?? max($totalBeforeLoyalty - $loyaltyDiscount, 0));
+
+        return response()->json([
+            'order' => [
+                'id' => (int) $order->id,
+                'order_code' => $order->Order_Code ?? null,
+                'transaction_number' => $order->Transaction_Number ?? null,
+                'status' => $order->Status ?? null,
+                'created_at' => $order->created_at ?? null,
+                'updated_at' => $order->updated_at ?? null,
+            ],
+            'items' => $items,
+            'fulfillment' => [
+                'type' => $order->Delivery_Type ?: (!empty($order->Customers_Contacts_Id) ? 'ship' : 'pickup'),
+                'shipping' => [
+                    'shipper_id' => $order->Shippers_Id ? (int) $order->Shippers_Id : null,
+                    'shipper_name' => $shipper->Shippers_Name ?? $shipper->Shipper_Name ?? null,
+                    'destination_id' => $order->Shippers_Destination_Id ? (int) $order->Shippers_Destination_Id : null,
+                    'destination_label' => $this->formatDestination($destination),
+                    'basis' => $order->Shipping_Basis ?? null,
+                    'price' => $shipping,
+                    'currency' => $order->Shipping_Currency ?? 'OMR',
+                    'weight_kg' => isset($order->Shipping_Weight_Kg) ? (float) $order->Shipping_Weight_Kg : null,
+                    'volume_cbm' => isset($order->Shipping_Volume_Cbm) ? (float) $order->Shipping_Volume_Cbm : null,
+                    'address' => $this->formatAddress($address),
+                ],
+                'pickup' => [
+                    'location_id' => $order->Location_Id ? (int) $order->Location_Id : null,
+                    'location_name' => $location->Location_Name ?? null,
+                    'location_code' => $location->Location_Code ?? null,
+                ],
+            ],
+            'payment' => $this->formatPayment($paymentRow),
+            'transaction' => [
+                'header_code' => $transactionHeader->Sales_Transaction_Header_code ?? null,
+                'bill_no' => $transactionHeader->Bill_No ?? null,
+            ],
+            'totals' => [
+                'original_subtotal' => round($originalSubtotal, 3),
+                'product_discount' => round($productDiscount, 3),
+                'subtotal' => round($subtotal, 3),
+                'vat' => round($vat, 3),
+                'shipping' => round($shipping, 3),
+                'before_loyalty' => round($totalBeforeLoyalty, 3),
+                'loyalty_points_redeemed' => (int) ($order->Loyalty_Points_Redeemed ?? 0),
+                'loyalty_discount' => round($loyaltyDiscount, 3),
+                'grand_total' => round($grandTotal, 3),
+                'currency' => $paymentRow->Payment_Currency ?? $order->Shipping_Currency ?? 'OMR',
+            ],
+        ]);
+    }
+
+    private function findTransactionHeader(object $order): ?object
+    {
+        $hasOrdersPlacedColumn = Schema::hasColumn('Sales_Transaction_Header_T', 'Orders_Placed_Id');
+        $hasOrderPlacedColumn = Schema::hasColumn('Sales_Transaction_Header_T', 'Order_Placed_Id');
+        $hasTransactionNumber = !empty($order->Transaction_Number);
+
+        if (!$hasOrdersPlacedColumn && !$hasOrderPlacedColumn && !$hasTransactionNumber) {
+            return null;
+        }
+
+        $query = DB::table('Sales_Transaction_Header_T');
+        $query->where(function ($q) use ($order, $hasOrdersPlacedColumn, $hasOrderPlacedColumn, $hasTransactionNumber) {
+            $hasCondition = false;
+
+            if ($hasOrdersPlacedColumn) {
+                $q->where('Orders_Placed_Id', $order->id);
+                $hasCondition = true;
+            }
+
+            if ($hasOrderPlacedColumn) {
+                $hasCondition
+                    ? $q->orWhere('Order_Placed_Id', $order->id)
+                    : $q->where('Order_Placed_Id', $order->id);
+                $hasCondition = true;
+            }
+
+            if ($hasTransactionNumber) {
+                $hasCondition
+                    ? $q->orWhere('Bill_No', $order->Transaction_Number)
+                    : $q->where('Bill_No', $order->Transaction_Number);
+            }
+        });
+
+        return $query->orderByDesc('id')->first();
+    }
+
+    private function formatPayment(?object $payment): array
+    {
+        if (!$payment) {
+            return [
+                'method' => null,
+                'status' => null,
+                'amount' => null,
+                'currency' => 'OMR',
+                'card' => null,
+                'transfer' => null,
+                'cod' => null,
+            ];
+        }
+
+        return [
+            'method' => $payment->Payment_Method ?? null,
+            'status' => $payment->Payment_Status ?? null,
+            'amount' => isset($payment->Payment_Amount) ? (float) $payment->Payment_Amount : null,
+            'currency' => $payment->Payment_Currency ?? 'OMR',
+            'card' => [
+                'brand' => $payment->Card_Brand ?? null,
+                'last4' => $payment->Card_Last4 ?? null,
+                'exp_month' => $payment->Card_Exp_Month ?? null,
+                'exp_year' => $payment->Card_Exp_Year ?? null,
+                'gateway' => $payment->Card_Gateway ?? null,
+                'transaction_id' => $payment->Card_Transaction_Id ?? null,
+                'auth_code' => $payment->Card_Auth_Code ?? null,
+            ],
+            'transfer' => [
+                'reference' => $payment->Transfer_Reference ?? null,
+                'payer_name' => $payment->Transfer_Payer_Name ?? null,
+                'bank_name' => $payment->Transfer_Bank_Name ?? null,
+                'received_at' => $payment->Transfer_Received_At ?? null,
+            ],
+            'cod' => [
+                'collected' => $payment->COD_Collected ?? null,
+                'collected_at' => $payment->COD_Collected_At ?? null,
+                'note' => $payment->COD_Note ?? null,
+            ],
+        ];
+    }
+
+    private function formatAddress(?object $address): ?array
+    {
+        if (!$address) {
+            return null;
+        }
+
+        return [
+            'contact_name' => $address->Contact_Person_Name ?? null,
+            'phone' => $address->Gsm ?? $address->Telephone ?? null,
+            'email' => $address->Email ?? null,
+            'designation' => $address->Designation ?? null,
+            'remarks' => $address->Remarks ?? null,
+            'country' => $this->geoName('Geox_Country_Master_T', $address->Country_Id ?? null, 'Country_Name'),
+            'region' => $this->geoName('Geox_Region_Master_T', $address->Region_Id ?? null, 'Region_Name'),
+            'district' => $this->geoName('Geox_District_Master_T', $address->District_Id ?? null, 'District_Name'),
+            'city' => $this->geoName('Geox_City_Master_T', $address->City_Id ?? null, 'City_Name'),
+        ];
+    }
+
+    private function geoName(string $table, mixed $id, string $column): ?string
+    {
+        if (!$id) {
+            return null;
+        }
+
+        return DB::table($table)->where('id', $id)->value($column);
+    }
+
+    private function formatDestination(?object $destination): ?string
+    {
+        if (!$destination) {
+            return null;
+        }
+
+        $parts = array_filter([
+            $destination->Shippers_Destination_Country ?? null,
+            $destination->Shippers_Destination_Region ?? null,
+            $destination->Shippers_Destination_District ?? null,
+            $destination->Shippers_Destination_Rate_Applicability ?? null,
+        ]);
+
+        return $parts ? implode(' / ', $parts) : null;
+    }
+
+    private function destinationMatchesAddress(object $destination, object $address): bool
+    {
+        $configured = false;
+        $addressLocation = $this->resolveAddressLocation($address);
+
+        $fields = [
+            'Shippers_Destination_Country_Id' => 'country_id',
+            'Shippers_Destination_Region_Id' => 'region_id',
+            'Shippers_Destination_District_Id' => 'district_id',
+        ];
+
+        foreach ($fields as $destinationField => $addressField) {
+            $destinationValue = $destination->{$destinationField} ?? null;
+
+            if ($destinationValue === null || $destinationValue === '') {
+                continue;
+            }
+
+            $configured = true;
+            $addressValue = $addressLocation[$addressField] ?? null;
+
+            if ($addressValue === null || (int) $destinationValue !== (int) $addressValue) {
+                return false;
+            }
+        }
+
+        return $configured;
+    }
+
+    private function resolveAddressLocation(object $address): array
+    {
+        $districtId = $address->District_Id ? (int) $address->District_Id : null;
+        $regionId = $address->Region_Id ? (int) $address->Region_Id : null;
+        $countryId = $address->Country_Id ? (int) $address->Country_Id : null;
+
+        if ($districtId !== null) {
+            $district = DB::table('Geox_District_Master_T as d')
+                ->leftJoin('Geox_Region_Master_T as r', 'r.id', '=', 'd.Region_Id')
+                ->where('d.id', $districtId)
+                ->select('d.Region_Id', 'r.Country_Id')
+                ->first();
+
+            if ($district) {
+                $regionId = $district->Region_Id ? (int) $district->Region_Id : $regionId;
+                $countryId = $district->Country_Id ? (int) $district->Country_Id : $countryId;
+            }
+        } elseif ($regionId !== null) {
+            $regionCountryId = DB::table('Geox_Region_Master_T')
+                ->where('id', $regionId)
+                ->value('Country_Id');
+
+            if ($regionCountryId) {
+                $countryId = (int) $regionCountryId;
+            }
+        }
+
+        return [
+            'country_id' => $countryId,
+            'region_id' => $regionId,
+            'district_id' => $districtId,
+        ];
     }
 }

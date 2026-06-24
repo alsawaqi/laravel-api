@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use App\Models\LoyaltyHistory;
+use Illuminate\Support\Facades\DB;
 
 class LoyaltyHistoryController extends Controller
 {
@@ -17,6 +18,9 @@ class LoyaltyHistoryController extends Controller
             'data' => [],
             'pagination' => null,
             'total_points' => 0,
+            'total_earned' => 0,
+            'total_redeemed' => 0,
+            'total_redeemed_amount' => 0,
         ]);
     }
 
@@ -43,9 +47,20 @@ class LoyaltyHistoryController extends Controller
 
     $p = $query->paginate($perPage);
 
-    $totalPoints = (int) LoyaltyHistory::where('Customer_Id', $customerId)
-        ->selectRaw('SUM(COALESCE(Points_Earned,0) - COALESCE(Points_Redeemed,0)) as total')
-        ->value('total') ?? 0;
+    $loyalty = DB::table('Customers_Loyalty_T')
+        ->where('Customer_Id', $customerId)
+        ->first();
+    $totalEarned = (int) ($loyalty->Points_Earned ?? 0);
+    $totalRedeemed = (int) ($loyalty->Points_Redeemed ?? 0);
+    $totalPoints = max(0, $totalEarned - $totalRedeemed);
+
+    $summary = LoyaltyHistory::where('Customer_Id', $customerId)
+        ->selectRaw('
+            SUM(COALESCE(Points_Earned,0)) as total_earned,
+            SUM(COALESCE(Points_Redeemed,0)) as total_redeemed,
+            SUM(COALESCE(Redeemed_Amount,0)) as total_redeemed_amount
+        ')
+        ->first();
 
     return response()->json([
         'data' => $p->items(),
@@ -58,6 +73,9 @@ class LoyaltyHistoryController extends Controller
             'to'           => $p->lastItem(),
         ],
         'total_points' => $totalPoints,
+        'total_earned' => $totalEarned,
+        'total_redeemed' => $totalRedeemed,
+        'total_redeemed_amount' => (float) ($summary->total_redeemed_amount ?? 0),
     ]);
 }
 }

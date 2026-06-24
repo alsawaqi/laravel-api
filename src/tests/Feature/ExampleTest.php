@@ -2,18 +2,18 @@
 
 namespace Tests\Feature;
 
-// use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
 class ExampleTest extends TestCase
 {
     /**
-     * A basic test example.
+     * Smoke test: the API boots and validation runs without touching the database.
+     * (This is an API-only app, so "/" is intentionally 404.)
      */
-    public function test_the_application_returns_a_successful_response(): void
+    public function test_login_validation_runs_without_database(): void
     {
-        $response = $this->get('/');
-
-        $response->assertStatus(200);
+        $this->postJson('/api/login', [])
+            ->assertStatus(422)
+            ->assertJsonValidationErrors(['email', 'password']);
     }
 }

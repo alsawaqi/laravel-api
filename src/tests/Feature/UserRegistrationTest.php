@@ -9,6 +9,14 @@ class UserRegistrationTest extends TestCase
 {
     use RefreshDatabase; // ⚠️ WARNING: This will wipe the database during test
 
+    // QUARANTINED: relies on RefreshDatabase + factories, but this app has no
+    // migrations. Skipped (without booting the RefreshDatabase trait) until a
+    // dedicated test database exists, so it can never wipe the shared isc DB.
+    protected function setUp(): void
+    {
+        $this->markTestSkipped('Quarantined: needs migrations / a dedicated test DB.');
+    }
+
     /** @test */
     public function it_registers_a_user_successfully()
     {

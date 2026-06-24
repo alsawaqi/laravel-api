@@ -40,7 +40,7 @@ class ShippingQuoteController extends Controller
         $productIds = array_keys($qtyById);
         $products = DB::table('Products_Master_T')
             ->whereIn('id', $productIds)
-            ->select('id', 'Weight_Kg', 'Volume_Cbm')
+            ->select('id', 'Product_Name', 'Weight_Kg', 'Length_Cm', 'Width_Cm', 'Height_Cm', 'Volume_Cbm')
             ->get()
             ->keyBy('id');
 
@@ -50,7 +50,18 @@ class ShippingQuoteController extends Controller
             $p = $products[$pid] ?? null;
             if (!$p) continue;
             $totalWeight += ((float)$p->Weight_Kg   ?: 0) * $q;
-            $totalVolume += ((float)$p->Volume_Cbm ?: 0) * $q;
+
+            $productVolume = (float)($p->Volume_Cbm ?? 0);
+            if ($productVolume <= 0) {
+                $length = (float)($p->Length_Cm ?? 0);
+                $width = (float)($p->Width_Cm ?? 0);
+                $height = (float)($p->Height_Cm ?? 0);
+                $productVolume = ($length > 0 && $width > 0 && $height > 0)
+                    ? $length * $width * $height
+                    : 0;
+            }
+
+            $totalVolume += $productVolume * $q;
         }
 
         // 3) Get address IDs (no more name lookups)
@@ -61,43 +72,89 @@ class ShippingQuoteController extends Controller
             return response()->json(['options' => []]);
         }
 
-        $districtId = $addr->District_Id ? (int)$addr->District_Id : null;
-        $regionId   = $addr->Region_Id   ? (int)$addr->Region_Id   : null;
-        $countryId  = $addr->Country_Id  ? (int)$addr->Country_Id  : null;
+        $location = $this->resolveAddressLocation($addr);
+        $districtId = $location['district_id'];
+        $regionId = $location['region_id'];
+        $countryId = $location['country_id'];
 
-        // Helper: fetch active shipper+destination pairs by a specific *ID* level
-        $fetchPairsById = function (string $level, int $id) {
-            $col = $level === 'district'
-                ? 'd.Shippers_Destination_District_Id'
-                : ($level === 'region' ? 'd.Shippers_Destination_Region_Id' : 'd.Shippers_Destination_Country_Id');
+        if (!$districtId && !$regionId && !$countryId) {
+            return response()->json(['options' => []]);
+        }
 
-            return DB::table('Shippers_Master_T as m')
-                ->join('Shipper_Destinations_T as d', 'd.Shippers_Id', '=', 'm.id')
-                ->leftJoin('Shipper_Shipping_Rates_T as r', function ($j) {
-                    $j->on('r.Shippers_Id', '=', 'm.id')
-                        ->on('r.Shippers_Destination_Id', '=', 'd.id');
-                })
-                ->where('m.Shippers_Is_Active', 1)
-                ->where($col, '=', $id)
-                ->select([
-                    'm.id as shipper_id',
-                    'm.Shippers_Name as shipper_name',
-                    'm.Shippers_Image_Path as shipper_image',
-                    'm.Shippers_Rate_Mode as rate_mode',   // weight|volume|both (we still read it)
-                    'd.id as destination_id',
-                    DB::raw('COALESCE(r.Shippers_Destination_Rate_Volume,0) as flag_volume'),
-                    DB::raw('COALESCE(r.Shippers_Destination_Rate_Weight,0) as flag_weight'),
-                    DB::raw('COALESCE(r.Shippers_Destination_Rate_Applicable,1) as flag_applicable'),
-                    DB::raw('COALESCE(r.Shippers_Destination_Rate_Box,0) as flag_box'),
-                ])
-                ->get();
-        };
+        // A destination matches only when every location level configured by the
+        // admin matches the customer's address. Country-only and region-only
+        // destinations still work as broader service areas.
+        $rankDistrict = $districtId ?? 0;
+        $rankRegion = $regionId ?? 0;
+        $rankCountry = $countryId ?? 0;
 
-        // Match by district → region → country (first non-empty)
-        $pairs = collect();
-        if ($districtId) $pairs = $fetchPairsById('district', $districtId);
-        if ($pairs->isEmpty() && $regionId)  $pairs = $fetchPairsById('region', $regionId);
-        if ($pairs->isEmpty() && $countryId) $pairs = $fetchPairsById('country', $countryId);
+        $pairs = DB::table('Shippers_Master_T as m')
+            ->join('Shipper_Destinations_T as d', 'd.Shippers_Id', '=', 'm.id')
+            ->leftJoin('Shipper_Shipping_Rates_T as r', function ($j) {
+                $j->on('r.Shippers_Id', '=', 'm.id')
+                    ->on('r.Shippers_Destination_Id', '=', 'd.id');
+            })
+            ->where('m.Shippers_Is_Active', 1)
+            ->where(function ($q) {
+                $q->whereNotNull('d.Shippers_Destination_Country_Id')
+                    ->orWhereNotNull('d.Shippers_Destination_Region_Id')
+                    ->orWhereNotNull('d.Shippers_Destination_District_Id');
+            })
+            ->where(function ($q) use ($districtId, $regionId, $countryId) {
+                $q->where(function ($scope) use ($countryId) {
+                    $scope->whereNull('d.Shippers_Destination_Country_Id');
+                    if ($countryId !== null) {
+                        $scope->orWhere('d.Shippers_Destination_Country_Id', $countryId);
+                    }
+                });
+
+                $q->where(function ($scope) use ($regionId) {
+                    $scope->whereNull('d.Shippers_Destination_Region_Id');
+                    if ($regionId !== null) {
+                        $scope->orWhere('d.Shippers_Destination_Region_Id', $regionId);
+                    }
+                });
+
+                $q->where(function ($scope) use ($districtId) {
+                    $scope->whereNull('d.Shippers_Destination_District_Id');
+                    if ($districtId !== null) {
+                        $scope->orWhere('d.Shippers_Destination_District_Id', $districtId);
+                    }
+                });
+            })
+            ->where(function ($q) use ($districtId, $regionId, $countryId) {
+                if ($districtId !== null) {
+                    $q->orWhere('d.Shippers_Destination_District_Id', $districtId);
+                }
+                if ($regionId !== null) {
+                    $q->orWhere('d.Shippers_Destination_Region_Id', $regionId);
+                }
+                if ($countryId !== null) {
+                    $q->orWhere('d.Shippers_Destination_Country_Id', $countryId);
+                }
+            })
+            ->select([
+                'm.id as shipper_id',
+                'm.Shippers_Name as shipper_name',
+                'm.Shippers_Image_Path as shipper_image',
+                'm.Shippers_Rate_Mode as rate_mode',
+                'd.id as destination_id',
+                'r.id as shipping_rate_id',
+                DB::raw('COALESCE(r.Shippers_Destination_Rate_Volume,0) as flag_volume'),
+                DB::raw('COALESCE(r.Shippers_Destination_Rate_Weight,0) as flag_weight'),
+                DB::raw('COALESCE(r.Shippers_Destination_Rate_Applicable,1) as flag_applicable'),
+                DB::raw('COALESCE(r.Shippers_Destination_Rate_Box,0) as flag_box'),
+                DB::raw("CASE
+                    WHEN d.Shippers_Destination_District_Id = {$rankDistrict} THEN 3
+                    WHEN d.Shippers_Destination_Region_Id = {$rankRegion} THEN 2
+                    WHEN d.Shippers_Destination_Country_Id = {$rankCountry} THEN 1
+                    ELSE 0
+                END as match_rank"),
+            ])
+            ->orderByDesc('match_rank')
+            ->get()
+            ->unique('shipper_id')
+            ->values();
 
         // 4) Helpers: band fit & total calculator (mirrors UI math)
         $fits = function (?float $min, ?float $max, float $value): bool {
@@ -127,12 +184,16 @@ class ShippingQuoteController extends Controller
         };
 
         $calcTotalForBand = function ($band, float $units, string $minField, string $maxField, string $perField) {
-            $std  = (float)($band->Shippers_Standard_Shipping_Weight_Rate
+            $std = $band->Shippers_Standard_Shipping_Weight_Rate
                 ?? $band->Shippers_Standard_Shipping_Volume_Rate
-                ?? 0);
-            $base = (float)($band->Shippers_Base_Fee ?? 0);
+                ?? null;
+            $base = $band->Shippers_Base_Fee ?? $std ?? 0;
             $per  = (float)($band->$perField ?? 0);
             $flat = (float)($band->Shippers_Flat_Fee ?? 0);
+
+            if ($flat > 0) {
+                return $flat;
+            }
 
             $min  = isset($band->$minField) ? (float)$band->$minField : 0.0;
             $max  = isset($band->$maxField) ? (float)$band->$maxField : $units;
@@ -140,10 +201,60 @@ class ShippingQuoteController extends Controller
             // clamp units to [min, max]
             $chargeUnits = max($min, min($units, $max));
 
-            // mirror UI: base + max(0, chargeUnits - min) * per + std + flat
+            // Mirror admin preview: flat overrides; otherwise base/standard plus variable fee.
             $variable = $per > 0 ? max(0.0, $chargeUnits - $min) * $per : 0.0;
 
-            return $std + $base + $variable + $flat;
+            return (float)$base + $variable;
+        };
+
+        $dimensionToCm = function ($value): ?float {
+            if ($value === null || $value === '') return null;
+            $meters = (float)$value;
+            return $meters > 0 ? $meters * 100.0 : null;
+        };
+
+        $fitsCarrierMaxDimensions = function ($vr) use ($products, $qtyById, $dimensionToCm): bool {
+            if (!$vr || (int)($vr->Enabled ?? 1) !== 1) {
+                return true;
+            }
+
+            $maxDims = array_values(array_filter([
+                isset($vr->Max_L_cm) ? (float)$vr->Max_L_cm : null,
+                isset($vr->Max_W_cm) ? (float)$vr->Max_W_cm : null,
+                isset($vr->Max_H_cm) ? (float)$vr->Max_H_cm : null,
+            ], fn ($v) => $v !== null && $v > 0));
+
+            if (empty($maxDims)) {
+                return true;
+            }
+
+            rsort($maxDims, SORT_NUMERIC);
+
+            foreach ($qtyById as $pid => $qty) {
+                if ($qty <= 0) continue;
+                $product = $products[$pid] ?? null;
+                if (!$product) continue;
+
+                $itemDims = array_values(array_filter([
+                    $dimensionToCm($product->Length_Cm ?? null),
+                    $dimensionToCm($product->Width_Cm ?? null),
+                    $dimensionToCm($product->Height_Cm ?? null),
+                ], fn ($v) => $v !== null && $v > 0));
+
+                if (empty($itemDims)) {
+                    continue;
+                }
+
+                rsort($itemDims, SORT_NUMERIC);
+
+                foreach ($maxDims as $index => $max) {
+                    if (($itemDims[$index] ?? 0) > $max) {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
         };
 
         // 5) Build options
@@ -178,15 +289,21 @@ class ShippingQuoteController extends Controller
             $vrEnabled = $vr ? ((int)($vr->Enabled ?? 1) === 1) : false;
             $divisor   = $vr ? max(1.0, (float)($vr->Divisor ?? 4000)) : 4000.0;
 
+            if (!$fitsCarrierMaxDimensions($vr)) {
+                continue;
+            }
+
             // Convert CBM → cm^3 and apply divisor to get volumetric-kg
             $volumetricKg = $vrEnabled ? (($totalVolume * 1_000_000.0) / $divisor) : null;
             $chargeableKg = $vrEnabled && $volumetricKg !== null
                 ? max($totalWeight, $volumetricKg)
                 : $totalWeight;
 
-            // Allowances (presence of bands governs)
-            $allowWeight = $hasWeightBands;
-            $allowVolume = $hasVolumeBands;
+            // Existing destinations may have bands but no method row because older admin updates
+            // did not persist Shipper_Shipping_Rates_T. Infer from bands in that case.
+            $hasMethodFlags = !empty($p->shipping_rate_id);
+            $allowWeight = $hasWeightBands && ($hasMethodFlags ? ((int)$p->flag_weight === 1) : true);
+            $allowVolume = $hasVolumeBands && ($hasMethodFlags ? ((int)$p->flag_volume === 1) : true);
 
             // WEIGHT option (uses chargeable kg when VR enabled)
             if ($allowWeight && $chargeableKg > 0) {
@@ -280,5 +397,39 @@ class ShippingQuoteController extends Controller
         $codSupported = (bool)($shipper->Shippers_COD ?? false);
 
         return response()->json(['cod_supported' => $codSupported], 200);
+    }
+
+    private function resolveAddressLocation(object $address): array
+    {
+        $districtId = $address->District_Id ? (int) $address->District_Id : null;
+        $regionId = $address->Region_Id ? (int) $address->Region_Id : null;
+        $countryId = $address->Country_Id ? (int) $address->Country_Id : null;
+
+        if ($districtId !== null) {
+            $district = DB::table('Geox_District_Master_T as d')
+                ->leftJoin('Geox_Region_Master_T as r', 'r.id', '=', 'd.Region_Id')
+                ->where('d.id', $districtId)
+                ->select('d.Region_Id', 'r.Country_Id')
+                ->first();
+
+            if ($district) {
+                $regionId = $district->Region_Id ? (int) $district->Region_Id : $regionId;
+                $countryId = $district->Country_Id ? (int) $district->Country_Id : $countryId;
+            }
+        } elseif ($regionId !== null) {
+            $regionCountryId = DB::table('Geox_Region_Master_T')
+                ->where('id', $regionId)
+                ->value('Country_Id');
+
+            if ($regionCountryId) {
+                $countryId = (int) $regionCountryId;
+            }
+        }
+
+        return [
+            'country_id' => $countryId,
+            'region_id' => $regionId,
+            'district_id' => $districtId,
+        ];
     }
 }

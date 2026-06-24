@@ -2,10 +2,13 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Database\Eloquent\Model;
 
 class CustomerCart extends Model
 {
+    use SoftDeletes;
+
     public $table = 'Customers_Carts_T';
 
     protected $fillable = [
@@ -13,6 +16,7 @@ class CustomerCart extends Model
         'Customers_Id',
         'Products_Id',
         'Quantity',
+        'deleted_at',
         'created_at',
         'updated_at'
     ];

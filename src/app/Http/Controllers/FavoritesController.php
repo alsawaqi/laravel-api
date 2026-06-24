@@ -3,14 +3,12 @@
 namespace App\Http\Controllers;
 
 use App\Models\Favorite;
-use App\Models\User;
 use App\Models\Products;
-use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 
 class FavoritesController extends Controller
 {
-     public function toggle(Products $product)
+    public function toggle(Products $product)
     {
         $user = Auth::user();
         if (!$user) {
@@ -19,12 +17,21 @@ class FavoritesController extends Controller
 
         $customer = $user->customerOrCreate();
 
-        if ($customer->hasFavorited($product->getKey())) {
-            $customer->favorites()->detach($product->getKey());
+        $favorite = Favorite::query()
+            ->where('Customers_Id', $customer->id)
+            ->where('Products_Id', $product->getKey())
+            ->first();
+
+        if ($favorite) {
+            $favorite->delete();
             return response()->json(['favorited' => false]);
         }
 
-        $customer->favorites()->syncWithoutDetaching([$product->getKey()]);
+        Favorite::create([
+            'Customers_Id' => $customer->id,
+            'Products_Id' => $product->getKey(),
+        ]);
+
         return response()->json(['favorited' => true]);
     }
 
@@ -36,8 +43,9 @@ class FavoritesController extends Controller
             return response()->json(['data' => []]);
         }
 
-        $products = Favorite::where('Customers_Id', $user->customers->id)
-            ->with('product','product.images') // Eager load the related product
+        $products = Favorite::query()
+            ->where('Customers_Id', $user->customers->id)
+            ->with('product', 'product.images') // Eager load the related product
             ->get();
              
 

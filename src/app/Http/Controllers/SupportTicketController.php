@@ -7,7 +7,10 @@ use App\Models\SupportTicketMessage;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use App\Services\Notifications\CustomerNotificationService;
+use App\Support\Notifications\CustomerNotificationPayload;
 
  class SupportTicketController extends Controller
 {
@@ -100,6 +103,27 @@ use Illuminate\Support\Str;
                 'Sender_Type' => 'user',
                 'Message_Body'=> $request->input('description'),
             ]);
+
+            try {
+                app(CustomerNotificationService::class)->notifyUser(
+                    (int) Auth::id(),
+                    'customer.ticket_created',
+                    CustomerNotificationPayload::adminMessage(
+                        title: 'Request received',
+                        message: "We received {$ref}. Our support team will review it.",
+                        url: "/account?tab=tickets&ticket={$ticket->id}",
+                        meta: [
+                            'ticket_id' => $ticket->id,
+                            'ticket_reference' => $ref,
+                        ],
+                    ),
+                );
+            } catch (\Throwable $exception) {
+                Log::error('Failed to create ticket receipt notification', [
+                    'ticket_id' => $ticket->id,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
 
             return response()->json([
                 'message' => 'Ticket created.',

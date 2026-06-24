@@ -24,6 +24,7 @@ use App\Http\Controllers\ProductsController;
 use App\Http\Controllers\FavoritesController;
 use App\Http\Controllers\LocationsController;
 use App\Services\NotificationBroadcastService;
+use App\Http\Controllers\PolicyPageController;
 use App\Http\Controllers\CustomerCartController;
 use App\Http\Controllers\OrdersPlacedController;
 use App\Http\Controllers\PasswordResetController;
@@ -31,6 +32,9 @@ use App\Http\Controllers\ProductBrandsController;
 use App\Http\Controllers\ShippingQuoteController;
 use App\Http\Controllers\SupportTicketController;
 use App\Http\Controllers\AccountProfileController;
+use App\Http\Controllers\BackInStockAlertController;
+use App\Http\Controllers\CustomerNotificationController;
+use App\Http\Controllers\ProductEngagementController;
 use App\Http\Controllers\LoyaltyHistoryController;
 use App\Http\Controllers\CustomersContactController;
 use App\Http\Controllers\ProductDepartmentController;
@@ -38,66 +42,56 @@ use App\Http\Controllers\ProductsSubSubDepartmentController;
 use App\Http\Controllers\ProductSpecificationValueController;
 use App\Http\Controllers\UiSlidersController;
 
-Route::get('/test-user-broadcast', function () {
+if (app()->environment(['local', 'testing'])) {
+       Route::prefix('_dev')->middleware('throttle:5,1')->group(function () {
+              Route::get('/test-user-broadcast', function () {
+                     $order = ['id' => 101, 'item' => 'Sample Product', 'amount' => 49.99];
 
+                     $notification = ConxDatabaseNotification::create([
+                            'type' => 'order_created',
+                            'notifiable_type' => 'admin',
+                            'notifiable_id' => 1,
+                            'data' => [
+                                   'message' => 'New order created',
+                                   'order_id' => $order['id'],
+                                   'user_name' => 'Local broadcast test',
+                                   'created_at' => now()->toDateTimeString(),
+                            ],
+                     ]);
 
-         $order = ['id' => 101, 'item' => 'Sample Product', 'amount' => 49.99];
+                     broadcast(new OrderCreated($order, $notification));
 
-          // Create notification
-        $notification = ConxDatabaseNotification::create([
-            'type' => 'order_created',
-            'notifiable_type' => 'admin', // or your admin model
-            'notifiable_id' => 1, // admin user ID or get dynamically
-            'data' => json_encode([
-                'message' => 'New order created',
-                'order_id' => $order['id'],
-                'user_name' => 's',
-                'created_at' => now()->toDateTimeString(),
-            ]),
-        ]);
+                     return response()->json([
+                            'message' => 'Order broadcast test sent.',
+                            'order' => $order,
+                     ]);
+              });
 
-        // Broadcast event
-        broadcast(new OrderCreated($order, $notification));
+              Route::get('/test-broadcast', function () {
+                     $notification = ConxDatabaseNotification::create([
+                            'type' => 'order_created',
+                            'notifiable_type' => 'admin',
+                            'notifiable_id' => 1,
+                            'data' => [
+                                   'order_id' => 123,
+                                   'customer_name' => 'From USER API',
+                                   'total' => 99,
+                                   'message' => 'Local admin notification broadcast test',
+                            ],
+                     ]);
 
-        return response()->json([
-            'message' => 'Order created successfully',
-            'order' => $order
-        ]);
-   
-});
+                     $sent = app(NotificationBroadcastService::class)->sendToAdmin($notification);
 
+                     return response()->json([
+                            'success' => $sent,
+                            'notification_id' => $notification->id,
+                     ]);
+              });
+       });
+}
 
-
-Route::get('/test-broadcast', function () {
-
- $admin = User::find(1);
-
-    if ($admin) {
-        // 1) save to notifications table + broadcast (Laravel style)
-      $notification =  $admin->notify(new NewOrderNotification([
-            'id' => 123,
-            'customer_name' => 'From USER API',
-            'total' => 99,
-        ]));
-
-       }
-
-    // Broadcast to admin
-    app(NotificationBroadcastService::class)->sendToAdmin($notification);
-
-    return response()->json(['success' => true]);
-});
-
-
-
-Route::middleware('auth:api')->prefix('cart')->group(function () {
-    Route::get('/', [CustomerCartController::class, 'index']);          // get DB cart
-    Route::post('/sync', [CustomerCartController::class, 'sync']);   
-    Route::post('/add', [CustomerCartController::class, 'add']);    // merge guest cart -> DB
-    Route::post('/item', [CustomerCartController::class, 'setQuantity']);    // set qty for 1 product
-    Route::delete('/item/{productId}', [CustomerCartController::class, 'remove']);
-    Route::delete('/clear', [CustomerCartController::class, 'clear']);
-});
+Route::get('/policies', [PolicyPageController::class, 'index']);
+Route::get('/policies/{slug}', [PolicyPageController::class, 'show']);
 
 
 
@@ -146,6 +140,19 @@ Route::middleware([ForceJwtFromCookie::class, 'auth:api'])->group(function () {
        Route::patch('/tickets/{id}/close',      [SupportTicketController::class, 'close']);
        Route::delete('/tickets/{id}',            [SupportTicketController::class, 'destroy']);
 
+       Route::get('/notifications', [CustomerNotificationController::class, 'index']);
+       Route::get('/notifications/unread-count', [CustomerNotificationController::class, 'unreadCount']);
+       Route::patch('/notifications/{id}/read', [CustomerNotificationController::class, 'markRead']);
+       Route::post('/notifications/mark-all-read', [CustomerNotificationController::class, 'markAllRead']);
+
+       Route::post('/products/{productId}/back-in-stock-alert', [BackInStockAlertController::class, 'store']);
+       Route::post('/products/details/{product:slug}/reviews', [ProductEngagementController::class, 'storeReview']);
+       Route::post('/reviews/{review}/helpful', [ProductEngagementController::class, 'helpfulReview']);
+       Route::post('/reviews/{review}/report', [ProductEngagementController::class, 'reportReview']);
+       Route::post('/products/details/{product:slug}/questions', [ProductEngagementController::class, 'storeQuestion']);
+       Route::post('/questions/{question}/helpful', [ProductEngagementController::class, 'helpfulQuestion']);
+       Route::post('/questions/{question}/report', [ProductEngagementController::class, 'reportQuestion']);
+
 
        Route::prefix('/contacts')->group(function () {
 
@@ -153,15 +160,11 @@ Route::middleware([ForceJwtFromCookie::class, 'auth:api'])->group(function () {
               Route::post('/', [CustomersContactController::class, 'store']);
               Route::get('/by-country/{countryId}', [CustomersContactController::class, 'byCountry']);
               Route::get('/by-state/{stateId}', [CustomersContactController::class, 'byState']);
+              Route::patch('/{id}/default', [CustomersContactController::class, 'setDefault']);
               Route::get('/{id}', [CustomersContactController::class, 'show']);
               Route::put('/{id}', [CustomersContactController::class, 'update']);
               Route::delete('/{id}', [CustomersContactController::class, 'destroy']);
        });
-
-
-       Route::put('/contacts/{id}', [CustomersContactController::class, 'update']);     // PUT
-       Route::delete('/contacts/{id}', [CustomersContactController::class, 'destroy']);
-
 
 
        Route::controller(CustomersContactController::class)->group(function () {
@@ -171,6 +174,8 @@ Route::middleware([ForceJwtFromCookie::class, 'auth:api'])->group(function () {
 
 
        Route::get('/account/profile', [AccountProfileController::class, 'show']);
+
+       Route::post('/account/profile', [AccountProfileController::class, 'update']);
 
        Route::put('/account/profile', [AccountProfileController::class, 'update']);
 
@@ -183,15 +188,23 @@ Route::middleware([ForceJwtFromCookie::class, 'auth:api'])->group(function () {
 
 
        Route::get('/loyalty/points', [LoyaltyHistoryController::class, 'index']);
+       Route::get('/loyalty/summary', [LoyalityController::class, 'summary']);
        Route::get('/loyalty', [LoyalityController::class, 'index']);
 
 
-        Route::get('/cart', [CustomerCartController::class, 'index']);
-    Route::post('/cart', [CustomerCartController::class, 'addOrIncrease']);     // add item or +qty
-    Route::patch('/cart', [CustomerCartController::class, 'setQuantity']);      // set qty exact
-    Route::delete('/cart/{productId}', [CustomerCartController::class, 'remove']);
-    Route::post('/cart/merge', [CustomerCartController::class, 'merge']);    
-});
+       Route::prefix('cart')->group(function () {
+              Route::get('/', [CustomerCartController::class, 'index']);
+              Route::post('/', [CustomerCartController::class, 'addOrIncrease']);
+              Route::patch('/', [CustomerCartController::class, 'setQuantity']);
+              Route::post('/merge', [CustomerCartController::class, 'merge']);
+              Route::post('/sync', [CustomerCartController::class, 'sync']);
+              Route::post('/add', [CustomerCartController::class, 'add']);
+              Route::post('/item', [CustomerCartController::class, 'setQuantity']);
+              Route::delete('/clear', [CustomerCartController::class, 'clear']);
+              Route::delete('/item/{productId}', [CustomerCartController::class, 'remove'])->whereNumber('productId');
+              Route::delete('/{productId}', [CustomerCartController::class, 'remove'])->whereNumber('productId');
+       });
+	});
 
 
 Route::post('/email/resend-link', function (Request $request) {
@@ -324,6 +337,8 @@ Route::controller(ProductBrandsController::class)->group(function () {
 
 Route::controller(ProductsController::class)->group(function () {
        Route::get('/search/products', 'index');
+       Route::get('/products/details/{product:slug}/reviews', [ProductEngagementController::class, 'reviews']);
+       Route::get('/products/details/{product:slug}/questions', [ProductEngagementController::class, 'questions']);
        Route::get('/products/{subsub:slug}', 'show');
        Route::get('/products/details/{product:slug}', 'detail');
 });

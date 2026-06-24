@@ -7,9 +7,9 @@ use Illuminate\Http\Request;
 use App\Models\CustomersMaster;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
+use App\Services\ProductDiscountService;
  
  
-use Illuminate\Support\Str;
 
 class CustomerCartController extends Controller
 {
@@ -24,12 +24,19 @@ class CustomerCartController extends Controller
     public function index()
     {
         $customer = $this->customerOrFail();
+        $discountService = app(ProductDiscountService::class);
 
         $rows = CustomerCart::query()
             ->where('Customers_Id', $customer->id)
             ->with(['product.image']) // adjust product eager-load if you want images/specs
             ->orderBy('id', 'desc')
             ->get();
+
+        $rows->each(function ($row) use ($discountService) {
+            if ($row->product) {
+                $discountService->appendPriceAttributes($row->product);
+            }
+        });
 
         return response()->json([
             'data' => $rows,
@@ -90,7 +97,6 @@ class CustomerCartController extends Controller
                 'Products_Id'  => $productId,
             ],
             [
-                'Cart_Code'    => (string) Str::uuid(),
                 'Quantity'     => $qty,
             ]
         );
@@ -129,7 +135,6 @@ class CustomerCartController extends Controller
                 $row->update(['Quantity' => ((int)$row->Quantity + $addQty)]);
             } else {
                 CustomerCart::create([
-                  
                     'Customers_Id' => $customer->id,
                     'Products_Id'  => $productId,
                     'Quantity'     => $addQty,
@@ -142,6 +147,16 @@ class CustomerCartController extends Controller
          } catch (\Exception $e){
             return response()->json(['error' => $e->getMessage()], 500);
         }
+    }
+
+    public function addOrIncrease(Request $request)
+    {
+        return $this->add($request);
+    }
+
+    public function merge(Request $request)
+    {
+        return $this->sync($request);
     }
 
     // Upsert a single item (logged-in add/update)

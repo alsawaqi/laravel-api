@@ -26,7 +26,14 @@ class ProductsSubSubDepartmentController extends Controller
     return response()->json([
         'data' => [
             'id'          => (int) $subsub->id,
+            'Product_Sub_Sub_Department_Name' => $subsub->Product_Sub_Sub_Department_Name,
+            'Product_Sub_Sub_Department_Name_Ar' => $subsub->Product_Sub_Sub_Department_Name_Ar,
+            'Product_Sub_Sub_Department_Description' => $subsub->Product_Sub_Sub_Department_Description,
+            'Image_Path'  => $subsub->Image_Path,
+            'Slug'        => $subsub->Slug,
+            'View_Options' => $subsub->View_Options,
             'name'        => $subsub->Product_Sub_Sub_Department_Name,
+            'name_ar'     => $subsub->Product_Sub_Sub_Department_Name_Ar,
             'slug'        => $subsub->Slug,
             'description' => $subsub->Product_Sub_Sub_Department_Description,
             'view_options' => $subsub->View_Options,

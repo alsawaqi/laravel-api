@@ -16,6 +16,7 @@ class CustomersContact extends Model
       
         'Country_Id',
         'Contact_Person_Name',
+        'Telephone_Country_Code',
         'Telephone',
         'Fax',
         'Gsm',
@@ -25,8 +26,22 @@ class CustomersContact extends Model
         'Updated_status',
         'Created_date',
         'Region_Id',
-        'District_Id'
+        'District_Id',
+        'Is_Default',
     ];
+
+    protected $casts = [
+        'Is_Default' => 'boolean',
+    ];
+
+    protected $appends = [
+        'is_default',
+    ];
+
+    public function getIsDefaultAttribute(): bool
+    {
+        return (bool)($this->attributes['Is_Default'] ?? false);
+    }
 
 
 

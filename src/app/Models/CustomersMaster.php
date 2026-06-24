@@ -15,7 +15,12 @@ class CustomersMaster extends Model
         'Customer_Type_Id',
         'User_Id',
         'Customer_Full_Name',
+        'Telephone_Country_Code',
         'Telephone',
+        'Customer_Profile_Image_Path',
+        'Customer_Profile_Image_Size',
+        'Customer_Profile_Image_Extension',
+        'Customer_Profile_Image_Type',
         'updated_at'
     ];
 
@@ -31,13 +36,16 @@ class CustomersMaster extends Model
             'Favorites_Master_T',               // pivot table
             'Customers_Id',                     // foreign key on pivot that points to this model
             'Products_Id'                       // foreign key on pivot that points to Product
-        )->withTimestamps();
+        )->wherePivotNull('deleted_at')->withTimestamps();
     }
 
     // quick helper to check if a product is favorited
     public function hasFavorited(int $productId): bool
     {
-        return $this->favorites()->whereKey($productId)->exists();
+        return Favorite::query()
+            ->where('Customers_Id', $this->getKey())
+            ->where('Products_Id', $productId)
+            ->exists();
     }
 
 
