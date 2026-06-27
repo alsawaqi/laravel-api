@@ -54,6 +54,9 @@ RUN mkdir -p storage/logs bootstrap/cache \
     && chown -R www-data:www-data storage bootstrap/cache \
     && chmod -R 775 storage bootstrap/cache
 
+# Raise upload limits (avatars, return evidence, documents)
+COPY docker/prod/php/uploads.ini /usr/local/etc/php/conf.d/zz-uploads.ini
+
 COPY docker/prod/php/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
