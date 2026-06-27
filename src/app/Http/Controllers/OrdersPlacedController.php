@@ -237,6 +237,11 @@ class OrdersPlacedController extends Controller
             $itemsSubtotal = 0.0;
             $itemsVat = 0.0;
 
+            // VAT rate the admin set in Vat_Master_T (stored as a fraction, e.g. 0.05 = 5%).
+            // Read the same source the storefront cart uses (GET /api/vat) so the charged VAT
+            // matches exactly what the customer saw at cart/checkout.
+            $vatRate = (float) (\App\Models\Vat::query()->value('Vat') ?? 0);
+
             // For vendor grouping
             $lines = [];          // per cart line
             $vendorTotals = [];   // vendor_id => ['subtotal'=>, 'vat'=>]
@@ -264,7 +269,7 @@ class OrdersPlacedController extends Controller
                 $subtotal = $price * $qty;
                 $originalLineSubtotal = $originalPrice * $qty;
                 $lineDiscount = $unitDiscount * $qty;
-                $vat = $subtotal * 0.05;
+                $vat = $subtotal * $vatRate;
 
                 $originalItemsSubtotal += $originalLineSubtotal;
                 $productDiscountTotal += $lineDiscount;
@@ -352,7 +357,10 @@ class OrdersPlacedController extends Controller
                 $shipping['volume_cbm'] = $shippingTotals['volume_cbm'] ?? ($shipping['volume_cbm'] ?? null);
             }
 
-            $grandTotalBeforeLoyalty = $itemsSubtotal + $itemsVat + $shippingCost;
+            // VAT base = items subtotal + shipping (matches the storefront cart); shipping IS taxed.
+            $totalVat = round(($itemsSubtotal + $shippingCost) * $vatRate, 3);
+
+            $grandTotalBeforeLoyalty = $itemsSubtotal + $shippingCost + $totalVat;
             $loyaltyDiscountAmount = 0.0;
             $loyaltyPointsToRedeem = 0;
             $loyaltyRow = DB::table('Customers_Loyalty_T')
@@ -435,7 +443,7 @@ class OrdersPlacedController extends Controller
 
                 'Total_Price'             => $grandTotal,
                 'Status'                  => 'pending',
-                'VAT'                     => $itemsVat,
+                'VAT'                     => $totalVat,
                 'Sub_Total_Price'         => $itemsSubtotal,
 
                 'Shippers_Id'             => $validated['delivery_method'] === 'ship' ? ($shipping['shipper_id'] ?? null) : null,
@@ -594,7 +602,7 @@ class OrdersPlacedController extends Controller
                 'Merchant_Id'                     => $Merchant_Id,
                 'Bill_No'                         => $billNumber,
                 'Discount_Amount'                 => $loyaltyDiscountAmount,
-                'VAT_Tax_Amount'                  => $itemsVat,
+                'VAT_Tax_Amount'                  => $totalVat,
                 'Transaction_Date'                => now(),
                 'created_at'                      => now(),
                 'updated_at'                      => now(),
@@ -657,6 +665,8 @@ class OrdersPlacedController extends Controller
                     $vendorShipping = $shippingCost * ($totals['subtotal'] / $vendorSubTotalSum);
                 }
                 $vendorShipping = round($vendorShipping, 3);
+                // Tax this vendor's allocated shipping too, so the vendor VAT reconciles with the order total.
+                $vendorVat = round($totals['vat'] + ($vendorShipping * $vatRate), 3);
 
                 $vendorOrderPayload = [
                     'Orders_Placed_Id'   => $orderId,
@@ -664,9 +674,9 @@ class OrdersPlacedController extends Controller
                     'Vendor_Order_Code'  => CodeGenerator::createCode('VORD', 'Orders_Placed_Vendors_T', 'Vendor_Order_Code'),
 
                     'Sub_Total'          => round($totals['subtotal'], 3),
-                    'VAT'                => round($totals['vat'], 3),
+                    'VAT'                => $vendorVat,
                     'Shipping'           => $vendorShipping,
-                    'Total'              => round($totals['subtotal'] + $totals['vat'] + $vendorShipping, 3),
+                    'Total'              => round($totals['subtotal'] + $vendorVat + $vendorShipping, 3),
 
                     'Status'             => 'pending',
                     'Commission_Type'    => null,
