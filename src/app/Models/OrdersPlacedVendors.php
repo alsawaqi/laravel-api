@@ -22,6 +22,10 @@ class OrdersPlacedVendors extends Model
         'Commission_Type',
         'Commission_Value',
         'Commission_Amount',
+        // Where the commission came from: 'auto' (per-product rollup at checkout)
+        // or 'manual' (admin set/override). Payout/confirmation columns are
+        // deliberately NOT fillable here so checkout can never write payout state.
+        'Commission_Source',
         'Payout_Status',
 
         // Return/refund + net payout fields. place() sets these at creation; they MUST be
