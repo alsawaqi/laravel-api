@@ -22,6 +22,7 @@ class CustomersContact extends Model
         'Gsm',
         'Email',
         'Designation',
+        'Title_Id',
         'Remarks',
         'Updated_status',
         'Created_date',
@@ -78,5 +79,10 @@ class CustomersContact extends Model
     public function city()
     {
         return $this->belongsTo(City::class, 'City_Id');
+    }
+
+    public function title()
+    {
+        return $this->belongsTo(Title::class, 'Title_Id');
     }
 }

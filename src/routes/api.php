@@ -41,6 +41,7 @@ use App\Http\Controllers\ProductDepartmentController;
 use App\Http\Controllers\ProductsSubSubDepartmentController;
 use App\Http\Controllers\ProductSpecificationValueController;
 use App\Http\Controllers\UiSlidersController;
+use App\Http\Controllers\TitlesController;
 
 if (app()->environment(['local', 'testing'])) {
        Route::prefix('_dev')->middleware('throttle:5,1')->group(function () {
@@ -289,6 +290,11 @@ Route::controller(ShippingQuoteController::class)->group(function () {
 
 Route::controller(VatController::class)->group(function () {
        Route::get('/vat', 'index');
+});
+
+
+Route::controller(TitlesController::class)->group(function () {
+       Route::get('/titles', 'index');
 });
 
 

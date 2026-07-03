@@ -35,6 +35,7 @@ class CustomersContactController extends Controller
                                           })
                                           ->latest()
                                           ->get();
+            $this->attachTitleNames($contacts);
             return response()->json($contacts);
         }
 
@@ -44,6 +45,7 @@ class CustomersContactController extends Controller
                 $contact = CustomersContact::with(['country', 'state', 'district','region', 'city'])
                                             ->where('Customers_Contact_Id', Auth::user()?->customers->id)
                                            ->findOrFail($id);
+                $this->attachTitleNames(collect([$contact]));
                 return response()->json($contact);
             }
 
@@ -54,9 +56,11 @@ class CustomersContactController extends Controller
         $request->validate([
             'Telephone_Country_Code' => ['nullable', 'string', 'max:12', 'regex:/^\+\d{1,4}$/'],
             'Telephone' => ['nullable', 'string', 'max:30', 'regex:/^\d+$/'],
+            'Title_Id' => $this->titleIdRules(),
         ], [
             'Telephone_Country_Code.regex' => 'Choose a valid phone country code.',
             'Telephone.regex' => 'The telephone number may contain numbers only.',
+            'Title_Id.exists' => 'Choose a valid title.',
         ]);
 
 
@@ -90,7 +94,12 @@ class CustomersContactController extends Controller
                         $contactData['Is_Default'] = $isFirstContact;
                     }
 
+                    if (Schema::hasColumn('Customers_Contact_T', 'Title_Id')) {
+                        $contactData['Title_Id'] = $request->Title_Id;
+                    }
+
                     $contact = CustomersContact::create($contactData);
+                    $this->attachTitleNames(collect([$contact]));
 
                     return response()->json([
                         'message' => 'Address saved successfully.',
@@ -135,9 +144,11 @@ class CustomersContactController extends Controller
         $request->validate([
             'Telephone_Country_Code' => ['nullable', 'string', 'max:12', 'regex:/^\+\d{1,4}$/'],
             'Telephone' => ['nullable', 'string', 'max:30', 'regex:/^\d+$/'],
+            'Title_Id' => $this->titleIdRules(),
         ], [
             'Telephone_Country_Code.regex' => 'Choose a valid phone country code.',
             'Telephone.regex' => 'The telephone number may contain numbers only.',
+            'Title_Id.exists' => 'Choose a valid title.',
         ]);
 
         // Update directly from request (no validated array)
@@ -157,8 +168,14 @@ class CustomersContactController extends Controller
             'Remarks',
         ];
 
+        if (Schema::hasColumn('Customers_Contact_T', 'Title_Id')) {
+            $updatable[] = 'Title_Id';
+        }
+
         $data = $request->only($updatable);
         $contact->fill($data)->save();
+
+        $this->attachTitleNames(collect([$contact]));
 
         return response()->json([
             'message' => 'Address updated.',
@@ -220,6 +237,46 @@ class CustomersContactController extends Controller
             'message' => 'Default address updated.',
             'data' => $contact->fresh()->load(['country', 'region', 'district', 'city']),
         ]);
+    }
+
+    /**
+     * Validation rules for Title_Id. The exists rule is only applied once
+     * the Titles_Master_T lookup table has been migrated (isc-admin-api).
+     */
+    private function titleIdRules(): array
+    {
+        $rules = ['nullable', 'integer'];
+
+        if (Schema::hasTable('Titles_Master_T')) {
+            $rules[] = 'exists:Titles_Master_T,id';
+        }
+
+        return $rules;
+    }
+
+    /**
+     * Attach a null-safe title_name attribute to each contact, resolved
+     * from Titles_Master_T via Title_Id. No-op values (null) pre-migration.
+     */
+    private function attachTitleNames($contacts): void
+    {
+        if (!Schema::hasColumn('Customers_Contact_T', 'Title_Id') || !Schema::hasTable('Titles_Master_T')) {
+            foreach ($contacts as $contact) {
+                $contact->setAttribute('title_name', null);
+            }
+            return;
+        }
+
+        $titleIds = collect($contacts)->pluck('Title_Id')->filter()->unique()->values();
+
+        $names = $titleIds->isEmpty()
+            ? collect()
+            : DB::table('Titles_Master_T')->whereIn('id', $titleIds)->pluck('Title_Name', 'id');
+
+        foreach ($contacts as $contact) {
+            $titleId = $contact->Title_Id;
+            $contact->setAttribute('title_name', $titleId ? $names->get($titleId) : null);
+        }
     }
 
 
