@@ -11,7 +11,9 @@ class BackInStockAlertController extends Controller
 {
     public function store(Request $request, int $productId)
     {
-        $product = Products::query()->findOrFail($productId);
+        // SoftDeletes already 404s deleted products; deactivated ones must 404
+        // too — they are hidden from the storefront and not purchasable.
+        $product = Products::query()->active()->findOrFail($productId);
         $customer = Auth::user()?->customers;
 
         if (!$customer) {

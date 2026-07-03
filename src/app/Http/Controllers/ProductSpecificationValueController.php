@@ -15,8 +15,10 @@ class ProductSpecificationValueController extends Controller
     {
 
 
+         // Customer-facing product surface: deleted (SoftDeletes) and
+         // deactivated products must behave as not found.
          $is_active = Products::with([
-                                    
+
                                     'specifications.specValue',
                                     'specifications.description',
                                     'specifications' => function ($q) {
@@ -26,13 +28,18 @@ class ProductSpecificationValueController extends Controller
                                                 ])->whereHas('description', fn($d) => $d->where('is_active', 1));
                                             },
                                         ])->where('Slug', $subsub)
+                                         ->active()
                                          ->first();
 
  $features = Products::with([ 'specifications.specValue',
                               'specifications.description',
                               'specifications'])->where('Slug', $subsub)
+                                         ->active()
                                          ->first();
 
+       if (!$is_active || !$features) {
+              return response()->json(['message' => 'Product not found.'], 404);
+       }
 
        return response()->json([
                                 'is_ative' => $is_active->specifications,

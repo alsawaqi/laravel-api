@@ -4,12 +4,48 @@ namespace App\Models;
 
 use Spatie\Sluggable\SlugOptions;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Facades\Schema;
 
 class Products extends Model
 {
-    //
+    // Soft deletes: Products_Master_T.deleted_at is added by an isc-admin-api
+    // migration. That migration MUST be live before this code deploys — the
+    // trait adds `deleted_at IS NULL` to every query on this model.
+    use SoftDeletes;
+
     protected $table = 'Products_Master_T';
 
+    /**
+     * Internal admin-only money fields — customers must never see the
+     * product cost or the minimum-selling floor in any serialized response.
+     */
+    protected $hidden = ['Product_Cost', 'Minimum_Selling_Price'];
+
+    /**
+     * Storefront visibility: only active products (Is_Active = 1). Guarded by
+     * Schema::hasColumn because the prod DB may not have the column yet.
+     */
+    public function scopeActive($query)
+    {
+        if (Schema::hasColumn($this->getTable(), 'Is_Active')) {
+            $query->where($this->getTable() . '.Is_Active', 1);
+        }
+
+        return $query;
+    }
+
+    /**
+     * Route-model binding is only used on customer-facing routes (product
+     * detail, reviews/questions, favorites toggle). Deleted products are
+     * already excluded by SoftDeletes; deactivated products must 404 too.
+     */
+    public function resolveRouteBinding($value, $field = null)
+    {
+        return $this->where($field ?? $this->getRouteKeyName(), $value)
+            ->active()
+            ->first();
+    }
 
     public function favoritedBy()
     {
@@ -86,6 +122,17 @@ class Products extends Model
     }
 
     
+    /**
+     * Quantity-tier bulk prices, ordered for display/resolution. Only query
+     * this relation behind Schema::hasTable('Products_Bulk_Prices_T') — the
+     * table ships in an isc-admin-api migration and may lag on prod.
+     */
+    public function bulkPrices()
+    {
+        return $this->hasMany(ProductBulkPrice::class, 'Products_Id', 'id')
+            ->orderBy('Min_Qty');
+    }
+
     // App\Models\Products (Products_Master_T)
     public function specifications()
     {

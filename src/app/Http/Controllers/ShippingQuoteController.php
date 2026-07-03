@@ -6,6 +6,7 @@ use App\Models\Shippers;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class ShippingQuoteController extends Controller
 {
@@ -38,8 +39,19 @@ class ShippingQuoteController extends Controller
         }
 
         $productIds = array_keys($qtyById);
+        // Raw query (SoftDeletes trait does not apply): exclude deleted and
+        // deactivated products so quotes only price purchasable items. Both
+        // filters are guarded — the columns may not exist yet on prod.
         $products = DB::table('Products_Master_T')
             ->whereIn('id', $productIds)
+            ->when(
+                Schema::hasColumn('Products_Master_T', 'deleted_at'),
+                fn ($query) => $query->whereNull('deleted_at')
+            )
+            ->when(
+                Schema::hasColumn('Products_Master_T', 'Is_Active'),
+                fn ($query) => $query->where('Is_Active', 1)
+            )
             ->select('id', 'Product_Name', 'Weight_Kg', 'Length_Cm', 'Width_Cm', 'Height_Cm', 'Volume_Cbm')
             ->get()
             ->keyBy('id');

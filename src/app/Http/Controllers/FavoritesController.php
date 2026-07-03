@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Favorite;
 use App\Models\Products;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Schema;
 
 class FavoritesController extends Controller
 {
@@ -47,7 +48,17 @@ class FavoritesController extends Controller
             ->where('Customers_Id', $user->customers->id)
             ->with('product', 'product.images') // Eager load the related product
             ->get();
-             
+
+        // Hide favorites whose product was soft-deleted (relation is null via
+        // SoftDeletes) or deactivated — they are no longer visible on the storefront.
+        $hasIsActive = Schema::hasColumn('Products_Master_T', 'Is_Active');
+        $products = $products->filter(function ($favorite) use ($hasIsActive) {
+            if (!$favorite->product) {
+                return false;
+            }
+
+            return !$hasIsActive || (int) ($favorite->product->Is_Active ?? 1) === 1;
+        })->values();
 
         return response()->json($products);
     }

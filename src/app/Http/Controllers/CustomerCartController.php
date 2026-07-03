@@ -3,13 +3,16 @@
 namespace App\Http\Controllers;
 
 use App\Models\CustomerCart;
+use App\Models\Products;
 use Illuminate\Http\Request;
 use App\Models\CustomersMaster;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Schema;
 use App\Services\ProductDiscountService;
- 
- 
+use App\Support\Pricing\BulkPriceResolver;
+
+
 
 class CustomerCartController extends Controller
 {
@@ -21,20 +24,84 @@ class CustomerCartController extends Controller
         return $user->customerOrCreate();
     }
 
+    /**
+     * A product can be carted/purchased only when it still exists (not
+     * soft-deleted — SoftDeletes excludes those) and is active.
+     */
+    private function productAvailable(int $productId): bool
+    {
+        return Products::query()
+            ->whereKey($productId)
+            ->active()
+            ->exists();
+    }
+
     public function index()
     {
         $customer = $this->customerOrFail();
         $discountService = app(ProductDiscountService::class);
 
+        // Bulk tiers table ships in an isc-admin-api migration — guard every
+        // read so a lagging prod DB keeps today's response shape untouched.
+        $hasBulkPrices = Schema::hasTable('Products_Bulk_Prices_T');
+
+        $with = ['product' => fn ($q) => $q->withTrashed(), 'product.image'];
+        if ($hasBulkPrices) {
+            // Eager-load: ONE extra query for the whole cart.
+            $with[] = 'product.bulkPrices';
+        }
+
         $rows = CustomerCart::query()
             ->where('Customers_Id', $customer->id)
-            ->with(['product.image']) // adjust product eager-load if you want images/specs
+            // withTrashed: a soft-deleted product must still render on its
+            // cart line (name/image) instead of the relation resolving null.
+            ->with($with)
             ->orderBy('id', 'desc')
             ->get();
 
-        $rows->each(function ($row) use ($discountService) {
+        // Lines whose product was soft-deleted or deactivated are FLAGGED,
+        // not hidden: hiding them left invisible Customer_Cart_T rows that
+        // still hard-blocked checkout (place() 422s on them) with nothing
+        // for the customer to see or remove. The storefront can render the
+        // flag and the line keeps its remove button; place() also prunes
+        // these rows when it rejects, so checkout self-heals either way.
+        $hasIsActive = Schema::hasColumn('Products_Master_T', 'Is_Active');
+
+        $rows->each(function ($row) use ($discountService, $hasIsActive, $hasBulkPrices) {
+            $unavailable = !$row->product
+                || $row->product->trashed()
+                || ($hasIsActive && (int) ($row->product->Is_Active ?? 1) !== 1);
+
+            $row->setAttribute('is_unavailable', $unavailable);
+
             if ($row->product) {
                 $discountService->appendPriceAttributes($row->product);
+
+                // Quantity-tier bulk pricing (TIER WINS over discounts).
+                // Existing fields stay untouched for backward compat — the
+                // storefront reads Effective_Unit_Price/Has_Bulk_Price and
+                // falls back to Product_Final_Price when no tier matches.
+                $tier = $hasBulkPrices
+                    ? BulkPriceResolver::tierFor($row->product->bulkPrices, (int) $row->Quantity)
+                    : null;
+
+                if ($tier !== null) {
+                    $row->setAttribute('Has_Bulk_Price', true);
+                    $row->setAttribute('Bulk_Unit_Price', round($tier['unit_price'], 3));
+                    $row->setAttribute('Bulk_Tier', [
+                        'min_qty' => $tier['min_qty'],
+                        'max_qty' => $tier['max_qty'],
+                    ]);
+                    $row->setAttribute('Effective_Unit_Price', round($tier['unit_price'], 3));
+                } else {
+                    $row->setAttribute('Has_Bulk_Price', false);
+                    $row->setAttribute('Bulk_Unit_Price', null);
+                    $row->setAttribute('Bulk_Tier', null);
+                    $row->setAttribute(
+                        'Effective_Unit_Price',
+                        round((float) ($row->product->Product_Final_Price ?? $row->product->Product_Price ?? 0), 3)
+                    );
+                }
             }
         });
 
@@ -57,6 +124,12 @@ class CustomerCartController extends Controller
         foreach ($payload['items'] as $item) {
             $productId = (int) $item['product_id'];
             $qty       = (int) $item['quantity'];
+
+            // Guest carts may reference products that have since been
+            // deleted/deactivated — skip them instead of failing the merge.
+            if (!$this->productAvailable($productId)) {
+                continue;
+            }
 
             $existing = CustomerCart::query()
                 ->where('Customers_Id', $customer->id)
@@ -91,6 +164,10 @@ class CustomerCartController extends Controller
         $productId = (int) $data['product_id'];
         $qty       = (int) $data['quantity'];
 
+        if (!$this->productAvailable($productId)) {
+            return response()->json(['message' => 'This product is no longer available.'], 422);
+        }
+
         $row = CustomerCart::query()->firstOrCreate(
             [
                 'Customers_Id' => $customer->id,
@@ -120,7 +197,11 @@ class CustomerCartController extends Controller
 
         $productId = (int) $data['product_id'];
         $addQty    = (int) ($data['quantity'] ?? 1);
-  
+
+        if (!$this->productAvailable($productId)) {
+            return response()->json(['message' => 'This product is no longer available.'], 422);
+        }
+
         try{
 
        

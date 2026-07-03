@@ -95,11 +95,19 @@ class ProductsController extends Controller
                 ];
             });
 
+        // Customer-facing search: soft-deleted and deactivated products must never
+        // surface. Raw query, so the SoftDeletes trait does not apply — filter
+        // explicitly, guarded because prod may not have the columns yet.
+        $hasDeletedAt = Schema::hasColumn('Products_Master_T', 'deleted_at');
+        $hasIsActive = Schema::hasColumn('Products_Master_T', 'Is_Active');
+
         $products = DB::table('Products_Master_T as p')
             ->leftJoin('Products_Sub_Sub_Department_T as ssd', 'ssd.id', '=', 'p.Product_Sub_Sub_Department_Id')
             ->leftJoin('Products_Sub_Department_T as sd', 'sd.id', '=', 'p.Product_Sub_Department_Id')
             ->leftJoin('Products_Departments_T as d', 'd.id', '=', 'p.Product_Department_Id')
             ->select(StorefrontArabicFields::productSearchSelect())
+            ->when($hasDeletedAt, fn ($query) => $query->whereNull('p.deleted_at'))
+            ->when($hasIsActive, fn ($query) => $query->where('p.Is_Active', 1))
             ->whereNotNull('p.Slug')
             ->where(function ($query) use ($contains) {
                 $query->where('p.Product_Name', 'like', $contains)
@@ -200,9 +208,11 @@ class ProductsController extends Controller
     {
         $discountService = app(ProductDiscountService::class);
 
-        // Base query: products in this sub-sub department
+        // Base query: products in this sub-sub department.
+        // SoftDeletes hides deleted rows; ->active() hides deactivated ones.
         $products = Products::query()
             ->with(['image', 'specifications.specValue'])
+            ->active()
             ->where('Product_Sub_Sub_Department_Id', $subsub->id);
 
         // -------------------------------
@@ -345,6 +355,19 @@ public function detail(Products $product)
     try{
                 $product->load(['images','department','subdepartment','subSubDepartment']);
                 app(ProductDiscountService::class)->appendPriceAttributes($product);
+
+                // Quantity-tier bulk prices (public pricing — table ships in
+                // an isc-admin-api migration, so guard for a lagging prod DB).
+                if (Schema::hasTable('Products_Bulk_Prices_T')) {
+                    $product->setAttribute(
+                        'Bulk_Prices',
+                        $product->bulkPrices()->get()->map(fn ($tier) => [
+                            'min_qty'    => (int) $tier->Min_Qty,
+                            'max_qty'    => $tier->Max_Qty !== null ? (int) $tier->Max_Qty : null,
+                            'unit_price' => round((float) $tier->Unit_Price, 3),
+                        ])->values()
+                    );
+                }
 
                 $specs = ProductSpecificationProduct::with('description')
                                                      ->where('Product_Id', $product->id)
