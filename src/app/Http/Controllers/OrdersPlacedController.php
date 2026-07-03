@@ -32,6 +32,8 @@ use App\Services\Checkout\LoyaltyRedemptionCalculator;
 use App\Services\ProductDiscountService;
 use App\Services\Notifications\CustomerNotificationService;
 use App\Support\Notifications\CustomerNotificationPayload;
+use App\Support\Pricing\BulkPriceResolver;
+use App\Support\Vendors\VendorCommissionCalculator;
 use App\Models\ConxDatabaseNotification;
 use App\Notifications\NewOrderNotification;
 use InvalidArgumentException;
@@ -223,12 +225,64 @@ class OrdersPlacedController extends Controller
             }
 
             // ✅ Preload all products
+            // Bulk tiers table ships in an isc-admin-api migration — until it
+            // exists this flag keeps checkout byte-for-byte on today's path.
+            $hasBulkPrices = Schema::hasTable('Products_Bulk_Prices_T');
+
             $productIds = $cartRows->pluck('Products_Id')->unique()->values();
-            $productsMap = Products::query()
+            $productsQuery = Products::query()
                 ->whereIn('id', $productIds)
-                ->lockForUpdate()
+                ->lockForUpdate();
+
+            if ($hasBulkPrices) {
+                // Eager-load: exactly ONE extra query for the whole cart.
+                $productsQuery->with('bulkPrices');
+            }
+
+            $productsMap = $productsQuery
                 ->get()
                 ->keyBy('id');
+
+            // ✅ NEVER sell a deleted or deactivated product. Soft-deleted rows
+            // are already excluded from $productsMap by the SoftDeletes trait;
+            // deactivated ones are checked explicitly (guarded — the Is_Active
+            // column may not exist yet on a lagging prod DB). This mirrors the
+            // stock-validation failure (clear per-product message), but returns
+            // 422 so the storefront can tell the customer to fix the cart.
+            $hasIsActive = Schema::hasColumn('Products_Master_T', 'Is_Active');
+            $unavailable = [];
+            $unavailableProductIds = [];
+
+            foreach ($cartRows as $cart) {
+                $product = $productsMap->get($cart->Products_Id);
+
+                if (!$product) {
+                    $unavailable[] = "product ID {$cart->Products_Id}";
+                    $unavailableProductIds[] = (int) $cart->Products_Id;
+                } elseif ($hasIsActive && (int) ($product->Is_Active ?? 1) !== 1) {
+                    $unavailable[] = "{$product->Product_Name} (ID {$product->id})";
+                    $unavailableProductIds[] = (int) $cart->Products_Id;
+                }
+            }
+
+            if (!empty($unavailable)) {
+                DB::rollBack();
+
+                // Self-heal: drop the dead cart rows (AFTER rollback so the
+                // delete survives) — otherwise an invisible/unremovable line
+                // would block this customer's checkout forever.
+                CustomerCart::query()
+                    ->where('Customers_Id', $customer->id)
+                    ->whereIn('Products_Id', $unavailableProductIds)
+                    ->delete();
+
+                return response()->json([
+                    'message' => 'Order failed',
+                    'error'   => 'These items are no longer available and were removed from your cart: '
+                        . implode(', ', $unavailable)
+                        . '. Please review your cart and try again.',
+                ], 422);
+            }
 
             // ✅ Compute totals from DB (secure)
             $discountService = app(ProductDiscountService::class);
@@ -244,8 +298,12 @@ class OrdersPlacedController extends Controller
 
             // For vendor grouping
             $lines = [];          // per cart line
-            $vendorTotals = [];   // vendor_id => ['subtotal'=>, 'vat'=>]
+            $vendorTotals = [];   // vendor_id => ['subtotal'=>, 'vat'=>, 'lines'=>]
             $vendorSubTotalSum = 0.0;
+
+            // Per-product commission columns are added by an admin-api migration; until
+            // they exist this must behave exactly like the pre-commission flow.
+            $hasProductCommission = Schema::hasColumn('Products_Master_T', 'Commission_Type');
 
             foreach ($cartRows as $cart) {
                 $product = $productsMap->get($cart->Products_Id);
@@ -266,6 +324,25 @@ class OrdersPlacedController extends Controller
                 $originalPrice = (float) $pricing['original_price'];
                 $price = (float) $pricing['final_price'];
                 $unitDiscount = (float) $pricing['discount_amount'];
+                $lineDiscountInfo = $pricing['discount'];
+
+                // ✅ TIER WINS: when a quantity-tier bulk price covers this
+                // line's qty, the tier unit price replaces the (possibly
+                // discounted) price and product discounts do NOT stack —
+                // unit_discount = 0 and no Product_Discount_* snapshot.
+                // original_price stays the base Product_Price. Nothing else
+                // in the totals math changes: VAT/shipping/loyalty/vendor
+                // split/commission all key off the line subtotal below.
+                $bulkUnitPrice = $hasBulkPrices
+                    ? BulkPriceResolver::unitPriceFor($product->bulkPrices, $qty)
+                    : null;
+
+                if ($bulkUnitPrice !== null) {
+                    $price = round($bulkUnitPrice, 3);
+                    $unitDiscount = 0.0;
+                    $lineDiscountInfo = null;
+                }
+
                 $subtotal = $price * $qty;
                 $originalLineSubtotal = $originalPrice * $qty;
                 $lineDiscount = $unitDiscount * $qty;
@@ -283,11 +360,24 @@ class OrdersPlacedController extends Controller
 
                 if ($vendorId) {
                     if (!isset($vendorTotals[$vendorId])) {
-                        $vendorTotals[$vendorId] = ['subtotal' => 0.0, 'vat' => 0.0];
+                        $vendorTotals[$vendorId] = ['subtotal' => 0.0, 'vat' => 0.0, 'lines' => []];
                     }
                     $vendorTotals[$vendorId]['subtotal'] += $subtotal;
                     $vendorTotals[$vendorId]['vat'] += $vat;
                     $vendorSubTotalSum += $subtotal;
+
+                    // Collect this vendor line for the per-product commission rollup.
+                    // 'subtotal' is the SAME discounted pre-VAT value persisted to
+                    // Orders_Placed_Details_T.Subtotal below; 'line_index' points at the
+                    // $lines entry about to be appended so per-line snapshots can be
+                    // written onto the matching detail row.
+                    $vendorTotals[$vendorId]['lines'][] = [
+                        'line_index'       => count($lines),
+                        'subtotal'         => $subtotal,
+                        'quantity'         => $qty,
+                        'commission_type'  => $hasProductCommission ? ($product->Commission_Type ?? null) : null,
+                        'commission_value' => $hasProductCommission ? ($product->Commission_Value ?? null) : null,
+                    ];
                 }
 
                 $lines[] = [
@@ -299,7 +389,7 @@ class OrdersPlacedController extends Controller
                     'price'      => $price,
                     'unit_discount' => $unitDiscount,
                     'line_discount' => $lineDiscount,
-                    'discount'   => $pricing['discount'],
+                    'discount'   => $lineDiscountInfo,
                     'subtotal'   => $subtotal,
                     'vat'        => $vat,
                 ];
@@ -655,6 +745,8 @@ class OrdersPlacedController extends Controller
 
             // ✅ Create vendor headers (ONLY for vendor products)
             $vendorOrderIds = []; // vendor_id => vendor_order_id
+            $hasVendorCommissionSource = Schema::hasColumn('Orders_Placed_Vendors_T', 'Commission_Source');
+            $hasDetailCommission = Schema::hasColumn('Orders_Placed_Details_T', 'Commission_Amount');
 
             foreach ($vendorTotals as $vendorId => $totals) {
 
@@ -668,29 +760,59 @@ class OrdersPlacedController extends Controller
                 // Tax this vendor's allocated shipping too, so the vendor VAT reconciles with the order total.
                 $vendorVat = round($totals['vat'] + ($vendorShipping * $vatRate), 3);
 
+                $vendorSubTotal = round($totals['subtotal'], 3);
+
+                // Per-product commission rollup: auto-compute ONLY when every line in
+                // this vendor's group has a valid product commission AND the sum does
+                // not exceed the vendor subtotal. Otherwise fall back to the manual
+                // flow exactly as before (nulls + 'pending').
+                $commissionPlan = VendorCommissionCalculator::planForVendorLines($totals['lines'] ?? []);
+                $autoCommission = $commissionPlan['covered'] && $commissionPlan['total'] <= $vendorSubTotal;
+
                 $vendorOrderPayload = [
                     'Orders_Placed_Id'   => $orderId,
                     'Vendor_Id'          => $vendorId,
                     'Vendor_Order_Code'  => CodeGenerator::createCode('VORD', 'Orders_Placed_Vendors_T', 'Vendor_Order_Code'),
 
-                    'Sub_Total'          => round($totals['subtotal'], 3),
+                    'Sub_Total'          => $vendorSubTotal,
                     'VAT'                => $vendorVat,
                     'Shipping'           => $vendorShipping,
                     'Total'              => round($totals['subtotal'] + $vendorVat + $vendorShipping, 3),
 
-                    'Status'             => 'pending',
-                    'Commission_Type'    => null,
+                    'Status'             => $autoCommission ? 'commission_auto' : 'pending',
+                    'Commission_Type'    => $autoCommission ? 'auto' : null,
                     'Commission_Value'   => null,
-                    'Commission_Amount'  => null,
+                    'Commission_Amount'  => $autoCommission ? $commissionPlan['total'] : null,
                     'Payout_Status'      => 'unpaid',
                 ];
+
+                if ($hasVendorCommissionSource) {
+                    $vendorOrderPayload['Commission_Source'] = $autoCommission ? 'auto' : null;
+                }
+
+                if ($autoCommission) {
+                    // Stash per-line snapshots on the matching $lines entries so the
+                    // detail insert below persists them onto Orders_Placed_Details_T.
+                    foreach ($totals['lines'] as $vendorLineIdx => $vendorLine) {
+                        $lineIndex = $vendorLine['line_index'];
+                        $lines[$lineIndex]['commission_type'] = $vendorLine['commission_type'];
+                        $lines[$lineIndex]['commission_value'] = $vendorLine['commission_value'];
+                        $lines[$lineIndex]['commission_amount'] = $commissionPlan['lines'][$vendorLineIdx];
+                    }
+                }
 
                 if (Schema::hasColumn('Orders_Placed_Vendors_T', 'Net_Sub_Total')) {
                     $vendorOrderPayload['Returned_Quantity'] = 0;
                     $vendorOrderPayload['Refunded_Amount'] = 0;
                     $vendorOrderPayload['Net_Sub_Total'] = round($totals['subtotal'], 3);
                     $vendorOrderPayload['Adjusted_Commission_Amount'] = null;
-                    $vendorOrderPayload['Net_Payout_Amount'] = round($totals['subtotal'], 3);
+                    // When the commission is auto-computed at checkout, the pending
+                    // payout is already known: subtotal minus commission. Leaving it
+                    // at the full subtotal made reports show payout + commission >
+                    // net sales until a refund/payout overwrote it.
+                    $vendorOrderPayload['Net_Payout_Amount'] = $autoCommission
+                        ? round(max($vendorSubTotal - (float) $commissionPlan['total'], 0), 3)
+                        : round($totals['subtotal'], 3);
                     $vendorOrderPayload['Payout_Adjustment_Amount'] = 0;
                 }
 
@@ -765,6 +887,15 @@ class OrdersPlacedController extends Controller
                     $detailPayload['Net_Amount'] = round($ln['subtotal'], 3);
                     $detailPayload['Return_State'] = 'not_returned';
                     $detailPayload['Refund_State'] = 'not_refunded';
+                }
+
+                // Per-line commission snapshot: only set when this line's vendor order
+                // was auto-computed above (commission_auto). Uncovered vendor groups and
+                // in-house lines keep these columns NULL.
+                if ($hasDetailCommission && array_key_exists('commission_amount', $ln)) {
+                    $detailPayload['Commission_Type'] = $ln['commission_type'];
+                    $detailPayload['Commission_Value'] = $ln['commission_value'];
+                    $detailPayload['Commission_Amount'] = $ln['commission_amount'];
                 }
 
                 DB::table('Orders_Placed_Details_T')->insert($detailPayload);
@@ -1190,11 +1321,21 @@ class OrdersPlacedController extends Controller
             return null;
         }
 
+        $titleName = null;
+        if (!empty($address->Title_Id) && Schema::hasTable('Titles_Master_T')) {
+            $titleName = DB::table('Titles_Master_T')
+                ->where('id', $address->Title_Id)
+                ->value('Title_Name');
+        }
+
         return [
             'contact_name' => $address->Contact_Person_Name ?? null,
             'phone' => $address->Gsm ?? $address->Telephone ?? null,
             'email' => $address->Email ?? null,
-            'designation' => $address->Designation ?? null,
+            'title' => $titleName,
+            // Prefer the DB-driven title; fall back to the legacy free-text
+            // Designation for historical rows (do not break old data).
+            'designation' => $titleName ?? $address->Designation ?? null,
             'remarks' => $address->Remarks ?? null,
             'country' => $this->geoName('Geox_Country_Master_T', $address->Country_Id ?? null, 'Country_Name'),
             'region' => $this->geoName('Geox_Region_Master_T', $address->Region_Id ?? null, 'Region_Name'),
