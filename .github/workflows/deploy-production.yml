@@ -84,7 +84,7 @@ jobs:
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             "$VPS_USER@$VPS_HOST" \
-            "flock -w 3000 /home/abdallah/.production-deploy.lock bash -se -- '$DEPLOY_SHA'" <<'REMOTE'
+            "set -eu; tmp=\$(mktemp /tmp/isc-deploy.XXXXXX); trap 'rm -f \"\$tmp\"' 0; cat > \"\$tmp\"; chmod 700 \"\$tmp\"; flock -w 3000 /home/abdallah/.production-deploy.lock bash -- \"\$tmp\" '$DEPLOY_SHA'" <<'REMOTE'
           set -Eeuo pipefail
           deploy_sha="$1"
           test "${#deploy_sha}" -eq 40
@@ -146,4 +146,5 @@ jobs:
           curl -fsS --retry 5 --retry-delay 2 --retry-all-errors \
             --max-time 20 https://app.avinaq.com/up > /dev/null
           trap - ERR
+          echo "Customer API deployment completed: $deploy_sha"
           REMOTE
