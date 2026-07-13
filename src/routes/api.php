@@ -27,6 +27,8 @@ use App\Services\NotificationBroadcastService;
 use App\Http\Controllers\PolicyPageController;
 use App\Http\Controllers\CustomerCartController;
 use App\Http\Controllers\OrdersPlacedController;
+use App\Http\Controllers\AmwalPaymentController;
+use App\Http\Controllers\AmwalNotificationController;
 use App\Http\Controllers\PasswordResetController;
 use App\Http\Controllers\ProductBrandsController;
 use App\Http\Controllers\ShippingQuoteController;
@@ -94,6 +96,9 @@ if (app()->environment(['local', 'testing'])) {
 Route::get('/policies', [PolicyPageController::class, 'index']);
 Route::get('/policies/{slug}', [PolicyPageController::class, 'show']);
 
+Route::post('/payments/amwal/notification', AmwalNotificationController::class)
+       ->middleware('throttle:60,1');
+
 
 
 Route::middleware([ForceJwtFromCookie::class, 'auth:api'])->group(function () {
@@ -128,9 +133,24 @@ Route::middleware([ForceJwtFromCookie::class, 'auth:api'])->group(function () {
 
        Route::controller(OrdersPlacedController::class)->group(function () {
               Route::post('/orders/place', 'place');
+              Route::get('/orders/checkout-reconciliation', 'reconcileCheckout')
+                     ->middleware('throttle:60,1');
               Route::get('/orders', 'index');
               Route::get('/orders/{id}/details', 'getOrderDetails');
        });
+
+       Route::post('/payments/amwal/orders/{order}/configuration', [AmwalPaymentController::class, 'configuration'])
+              ->whereNumber('order')
+              ->middleware('throttle:20,1');
+       Route::get('/payments/amwal/orders/{order}/status', [AmwalPaymentController::class, 'status'])
+              ->whereNumber('order')
+              ->middleware('throttle:60,1');
+       Route::post('/payments/amwal/orders/{order}/callback', [AmwalPaymentController::class, 'callback'])
+              ->whereNumber('order')
+              ->middleware('throttle:30,1');
+       Route::post('/payments/amwal/orders/{order}/cancel', [AmwalPaymentController::class, 'cancel'])
+              ->whereNumber('order')
+              ->middleware('throttle:10,1');
 
 
 

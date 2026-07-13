@@ -17,6 +17,11 @@ return [
 
     'default' => env('CACHE_STORE', 'database'),
 
+    // Scheduler mutexes must not depend on the application's custom database
+    // cache schema. The production scheduler is a single persistent process,
+    // and the shared storage volume gives the file store durable atomic locks.
+    'scheduler_store' => env('SCHEDULE_CACHE_STORE', 'file'),
+
     /*
     |--------------------------------------------------------------------------
     | Cache Stores

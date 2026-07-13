@@ -4,24 +4,57 @@ namespace App\Http\Controllers;
 
 use App\Models\CustomerCart;
 use App\Models\Products;
-use Illuminate\Http\Request;
-use App\Models\CustomersMaster;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Schema;
+use App\Services\Checkout\ActiveAmwalCheckoutGuard;
 use App\Services\ProductDiscountService;
 use App\Support\Pricing\BulkPriceResolver;
-
-
+use Illuminate\Http\Request;
+use Illuminate\Http\Exceptions\HttpResponseException;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class CustomerCartController extends Controller
 {
-  private function customerOrFail()
+    private function customerOrFail()
     {
         $user = auth()->user();
 
         // You already have this helper
         return $user->customerOrCreate();
+    }
+
+    /**
+     * Checkout and unpaid-order cancellation use this same customer row as
+     * the per-customer serialization point. Every cart mutation must hold it
+     * until the cart write commits so those flows cannot observe or overwrite
+     * a half-mutated cart.
+     */
+    private function lockCustomerForCartMutation(int $customerId): void
+    {
+        $customer = DB::table('Customers_Master_T')
+            ->where('id', $customerId)
+            ->lockForUpdate()
+            ->first(['id']);
+
+        abort_unless($customer, 404, 'Customer not found.');
+    }
+
+    private function assertCartIsNotOwnedByPayment(int $customerId): void
+    {
+        $activeOrder = app(ActiveAmwalCheckoutGuard::class)->blockingOrder($customerId);
+
+        if (! $activeOrder) {
+            return;
+        }
+
+        throw new HttpResponseException(response()->json([
+            'message' => 'The active card payment must be cancelled before the cart can be changed.',
+            'code' => 'ACTIVE_AMWAL_PAYMENT',
+            'active_order' => [
+                'order_id' => (int) $activeOrder->id,
+                'order_code' => $activeOrder->Order_Code ?? null,
+                'payment_status' => $activeOrder->Payment_Status ?? null,
+            ],
+        ], 409));
     }
 
     /**
@@ -68,7 +101,7 @@ class CustomerCartController extends Controller
         $hasIsActive = Schema::hasColumn('Products_Master_T', 'Is_Active');
 
         $rows->each(function ($row) use ($discountService, $hasIsActive, $hasBulkPrices) {
-            $unavailable = !$row->product
+            $unavailable = ! $row->product
                 || $row->product->trashed()
                 || ($hasIsActive && (int) ($row->product->Is_Active ?? 1) !== 1);
 
@@ -121,36 +154,41 @@ class CustomerCartController extends Controller
             'items.*.quantity' => ['required', 'integer', 'min:1'],
         ]);
 
-        foreach ($payload['items'] as $item) {
-            $productId = (int) $item['product_id'];
-            $qty       = (int) $item['quantity'];
+        DB::transaction(function () use ($customer, $payload) {
+            $this->lockCustomerForCartMutation((int) $customer->id);
+            $this->assertCartIsNotOwnedByPayment((int) $customer->id);
 
-            // Guest carts may reference products that have since been
-            // deleted/deactivated — skip them instead of failing the merge.
-            if (!$this->productAvailable($productId)) {
-                continue;
+            foreach ($payload['items'] as $item) {
+                $productId = (int) $item['product_id'];
+                $qty = (int) $item['quantity'];
+
+                // Guest carts may reference products that have since been
+                // deleted/deactivated — skip them instead of failing the merge.
+                if (! $this->productAvailable($productId)) {
+                    continue;
+                }
+
+                $existing = CustomerCart::query()
+                    ->where('Customers_Id', $customer->id)
+                    ->where('Products_Id', $productId)
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($existing) {
+                    // Override DB qty with guest qty (latest).
+                    $existing->update(['Quantity' => $qty]);
+                } else {
+                    CustomerCart::create([
+                        'Customers_Id' => $customer->id,
+                        'Products_Id' => $productId,
+                        'Quantity' => $qty,
+                    ]);
+                }
             }
-
-            $existing = CustomerCart::query()
-                ->where('Customers_Id', $customer->id)
-                ->where('Products_Id', $productId)
-                ->first();
-
-            if ($existing) {
-                // ✅ Your requirement: override DB qty with guest qty (latest)
-                $existing->update(['Quantity' => $qty]);
-            } else {
-                CustomerCart::create([
-                    'Customers_Id' => $customer->id,
-                    'Products_Id'  => $productId,
-                    'Quantity'     => $qty,
-                ]);
-            }
-        }
+        }, 3);
 
         return $this->index();
     }
-
 
     public function setQuantity(Request $request)
     {
@@ -158,54 +196,20 @@ class CustomerCartController extends Controller
 
         $data = $request->validate([
             'product_id' => ['required', 'integer'],
-            'quantity'   => ['required', 'integer', 'min:1'], // ✅ no zero here
+            'quantity' => ['required', 'integer', 'min:1'], // ✅ no zero here
         ]);
 
         $productId = (int) $data['product_id'];
-        $qty       = (int) $data['quantity'];
+        $qty = (int) $data['quantity'];
 
-        if (!$this->productAvailable($productId)) {
-            return response()->json(['message' => 'This product is no longer available.'], 422);
-        }
+        $available = DB::transaction(function () use ($customer, $productId, $qty) {
+            $this->lockCustomerForCartMutation((int) $customer->id);
+            $this->assertCartIsNotOwnedByPayment((int) $customer->id);
 
-        $row = CustomerCart::query()->firstOrCreate(
-            [
-                'Customers_Id' => $customer->id,
-                'Products_Id'  => $productId,
-            ],
-            [
-                'Quantity'     => $qty,
-            ]
-        );
+            if (! $this->productAvailable($productId)) {
+                return false;
+            }
 
-        if (!$row->wasRecentlyCreated) {
-            $row->update(['Quantity' => $qty]);
-        }
-
-        return $this->index();
-    }
-
-
-    public function add(Request $request)
-    {
-        $customer = $this->customerOrFail();
-
-        $data = $request->validate([
-            'product_id' => ['required', 'integer'],
-            'quantity'   => ['sometimes', 'integer', 'min:1'], // default 1
-        ]);
-
-        $productId = (int) $data['product_id'];
-        $addQty    = (int) ($data['quantity'] ?? 1);
-
-        if (!$this->productAvailable($productId)) {
-            return response()->json(['message' => 'This product is no longer available.'], 422);
-        }
-
-        try{
-
-       
-        DB::transaction(function () use ($customer, $productId, $addQty) {
             $row = CustomerCart::query()
                 ->where('Customers_Id', $customer->id)
                 ->where('Products_Id', $productId)
@@ -213,21 +217,69 @@ class CustomerCartController extends Controller
                 ->first();
 
             if ($row) {
-                $row->update(['Quantity' => ((int)$row->Quantity + $addQty)]);
+                $row->update(['Quantity' => $qty]);
             } else {
                 CustomerCart::create([
                     'Customers_Id' => $customer->id,
-                    'Products_Id'  => $productId,
-                    'Quantity'     => $addQty,
+                    'Products_Id' => $productId,
+                    'Quantity' => $qty,
                 ]);
             }
-        });
+
+            return true;
+        }, 3);
+
+        if (! $available) {
+            return response()->json(['message' => 'This product is no longer available.'], 422);
+        }
 
         return $this->index();
+    }
 
-         } catch (\Exception $e){
-            return response()->json(['error' => $e->getMessage()], 500);
+    public function add(Request $request)
+    {
+        $customer = $this->customerOrFail();
+
+        $data = $request->validate([
+            'product_id' => ['required', 'integer'],
+            'quantity' => ['sometimes', 'integer', 'min:1'], // default 1
+        ]);
+
+        $productId = (int) $data['product_id'];
+        $addQty = (int) ($data['quantity'] ?? 1);
+
+        $available = DB::transaction(function () use ($customer, $productId, $addQty) {
+            $this->lockCustomerForCartMutation((int) $customer->id);
+            $this->assertCartIsNotOwnedByPayment((int) $customer->id);
+
+            if (! $this->productAvailable($productId)) {
+                return false;
+            }
+
+            $row = CustomerCart::query()
+                ->where('Customers_Id', $customer->id)
+                ->where('Products_Id', $productId)
+                ->lockForUpdate()
+                ->first();
+
+            if ($row) {
+                $row->update(['Quantity' => (int) $row->Quantity + $addQty]);
+            } else {
+                CustomerCart::create([
+                    'Customers_Id' => $customer->id,
+                    'Products_Id' => $productId,
+                    'Quantity' => $addQty,
+                ]);
+            }
+
+            return true;
+        }, 3);
+
+        if (! $available) {
+            return response()->json(['message' => 'This product is no longer available.'], 422);
         }
+
+        return $this->index();
     }
 
     public function addOrIncrease(Request $request)
@@ -268,7 +320,7 @@ class CustomerCartController extends Controller
     //         $row->update(['Quantity' => $qty]);
     //     } else {
     //         CustomerCart::create([
-               
+
     //             'Customers_Id' => $customer->id,
     //             'Products_Id'  => $productId,
     //             'Quantity'     => $qty,
@@ -282,10 +334,15 @@ class CustomerCartController extends Controller
     {
         $customer = $this->customerOrFail();
 
-        CustomerCart::query()
-            ->where('Customers_Id', $customer->id)
-            ->where('Products_Id', $productId)
-            ->delete();
+        DB::transaction(function () use ($customer, $productId) {
+            $this->lockCustomerForCartMutation((int) $customer->id);
+            $this->assertCartIsNotOwnedByPayment((int) $customer->id);
+
+            CustomerCart::query()
+                ->where('Customers_Id', $customer->id)
+                ->where('Products_Id', $productId)
+                ->delete();
+        }, 3);
 
         return $this->index();
     }
@@ -294,9 +351,14 @@ class CustomerCartController extends Controller
     {
         $customer = $this->customerOrFail();
 
-        CustomerCart::query()
-            ->where('Customers_Id', $customer->id)
-            ->delete();
+        DB::transaction(function () use ($customer) {
+            $this->lockCustomerForCartMutation((int) $customer->id);
+            $this->assertCartIsNotOwnedByPayment((int) $customer->id);
+
+            CustomerCart::query()
+                ->where('Customers_Id', $customer->id)
+                ->delete();
+        }, 3);
 
         return response()->json(['ok' => true]);
     }
