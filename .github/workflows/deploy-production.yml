@@ -37,7 +37,9 @@ jobs:
           docker run --rm --entrypoint composer \
             -e APP_ENV=testing \
             -e APP_KEY=base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+            -e BROADCAST_CONNECTION=log -e CACHE_STORE=array \
             -e DB_CONNECTION=sqlite -e DB_DATABASE=:memory: \
+            -e MAIL_MAILER=array -e QUEUE_CONNECTION=sync -e SESSION_DRIVER=array \
             -v "$PWD/src:/var/www/html" -w /var/www/html \
             isc-customer-api-ci install --no-interaction --prefer-dist
 
@@ -46,7 +48,9 @@ jobs:
           docker run --rm --entrypoint php \
             -e APP_ENV=testing \
             -e APP_KEY=base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+            -e BROADCAST_CONNECTION=log -e CACHE_STORE=array \
             -e DB_CONNECTION=sqlite -e DB_DATABASE=:memory: \
+            -e MAIL_MAILER=array -e QUEUE_CONNECTION=sync -e SESSION_DRIVER=array \
             -v "$PWD/src:/var/www/html" -w /var/www/html \
             isc-customer-api-ci artisan test --testsuite=Unit
 
