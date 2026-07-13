@@ -1,0 +1,68 @@
+name: Deploy production
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - .github/workflows/deploy-production.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+
+    steps:
+      - name: Configure SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+
+      - name: Deploy customer API
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          ssh -i "$HOME/.ssh/id_ed25519" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" \
+            "flock -w 1200 /home/abdallah/.production-deploy.lock bash -se" <<'REMOTE'
+          set -Eeuo pipefail
+          cd /home/abdallah/apps/laravel-api
+
+          git fetch origin main
+          git merge --ff-only origin/main
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+
+          docker compose -f docker-compose.prod.yml exec -T laravel-app-api \
+            php artisan optimize:clear
+          docker compose -f docker-compose.prod.yml exec -T laravel-app-api \
+            php artisan config:cache
+          docker compose -f docker-compose.prod.yml exec -T laravel-app-api \
+            php artisan route:cache
+          docker compose -f docker-compose.prod.yml exec -T laravel-app-api \
+            php artisan view:cache
+
+          docker compose -f docker-compose.prod.yml up -d --build \
+            laravel-app-api nginx queue-worker scheduler redis
+          docker compose -f docker-compose.prod.yml restart nginx
+
+          curl -fsS --retry 5 --retry-delay 2 --retry-all-errors \
+            --max-time 20 https://app.avinaq.com/up > /dev/null
+          REMOTE
