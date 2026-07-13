@@ -27,6 +27,7 @@ class AmwalPaymentProcessorTest extends TestCase
 
         config()->set('services.amwal.merchant_id', self::MERCHANT_ID);
         config()->set('services.amwal.terminal_id', self::TERMINAL_ID);
+        config()->set('services.amwal.secure_key', self::KEY);
         config()->set('services.amwal.currency_id', '512');
         config()->set('services.amwal.enabled', true);
 
