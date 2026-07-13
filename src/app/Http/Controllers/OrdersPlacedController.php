@@ -27,7 +27,9 @@ use App\Services\Checkout\PaymentStatus;
 use App\Services\Checkout\PaymentGateway;
 use App\Services\Checkout\StockDeduction;
 use App\Services\Checkout\CheckoutIdempotency;
+use App\Services\Checkout\ActiveAmwalCheckoutGuard;
 use App\Services\Checkout\ShippingQuoteSelection;
+use App\Services\Checkout\LoyaltyEarningPolicy;
 use App\Services\Checkout\LoyaltyRedemptionCalculator;
 use App\Services\ProductDiscountService;
 use App\Services\Notifications\CustomerNotificationService;
@@ -40,6 +42,46 @@ use InvalidArgumentException;
 
 class OrdersPlacedController extends Controller
 {
+
+
+    public function reconcileCheckout(Request $request)
+    {
+        $customer = Auth::user()?->customers;
+        $checkoutRequestKey = CheckoutIdempotency::requestKey(
+            $request->header('Idempotency-Key'),
+            $request->query('checkout_request_key'),
+        );
+
+        if (!$customer || !$checkoutRequestKey) {
+            return response()->json(['message' => 'Checkout not found.'], 404);
+        }
+
+        // Serialize reconciliation with checkout creation. If the original
+        // POST is still committing, this request waits on the same customer
+        // lock and can only report 404 after that transaction has rolled back.
+        $order = DB::transaction(function () use ($customer, $checkoutRequestKey) {
+            $lockedCustomer = DB::table('Customers_Master_T')
+                ->where('id', $customer->id)
+                ->lockForUpdate()
+                ->first(['id']);
+
+            if (! $lockedCustomer) {
+                return null;
+            }
+
+            return $this->findExistingCheckoutOrder(
+                (int) $customer->id,
+                $checkoutRequestKey,
+                true,
+            );
+        }, 3);
+
+        if (!$order || strtolower((string) ($order->Payment_Method ?? '')) !== 'card') {
+            return response()->json(['message' => 'Checkout not found.'], 404);
+        }
+
+        return $this->idempotentOrderResponse($order);
+    }
 
 
     public function index(Request $request)
@@ -61,6 +103,19 @@ class OrdersPlacedController extends Controller
 
         $query = OrdersPlaced::query()
             ->where('Customers_Id', $customer->id)
+            // Card checkout rows are provisional until AmwalPay confirms a
+            // capture. Failed/cancelled drafts remain as internal audit
+            // tombstones for late callbacks but are not customer orders.
+            ->where(function ($visible) {
+                $visible->whereNull('Payment_Method')
+                    ->orWhere('Payment_Method', '<>', 'card')
+                    ->orWhereIn('Payment_Status', [
+                        'paid',
+                        'paid_requires_review',
+                        'refunded',
+                        'partially_refunded',
+                    ]);
+            })
             ->orderBy('id', 'desc');
 
         // date range
@@ -153,6 +208,10 @@ class OrdersPlacedController extends Controller
             // payment
             'payment'         => 'nullable|array',
             'payment.method'  => 'nullable|in:card,cod,transfer,loyalty',
+            'payment.currency' => ['nullable', Rule::in(['OMR'])],
+            'payment.amount' => ['nullable', 'numeric', 'min:0'],
+            // Cardholder data must be collected only inside Amwal SmartBox.
+            'payment.card' => ['prohibited'],
             'idempotency_key' => ['nullable', 'string', 'max:120'],
 
             // loyalty redemption
@@ -184,16 +243,142 @@ class OrdersPlacedController extends Controller
                 throw new \Exception("Customer not found for this user.");
             }
 
+            // Serialize checkout creation per customer. Without this lock, two
+            // different idempotency keys can both reserve stock before either
+            // transaction sees the other's unpaid card order.
+            $lockedCustomer = DB::table('Customers_Master_T')
+                ->where('id', $customer->id)
+                ->lockForUpdate()
+                ->first(['id']);
+
+            if (!$lockedCustomer) {
+                throw new \Exception("Customer not found for this user.");
+            }
+
+            // Lock the authoritative server cart before deciding whether an
+            // explicit idempotency key is a true replay or stale browser state.
+            $cartRows = CustomerCart::query()
+                ->where('Customers_Id', $customer->id)
+                ->lockForUpdate()
+                ->get();
+
             if ($explicitIdempotencyKey) {
-                $existing = $this->findExistingCheckoutOrder($customer->id, $explicitIdempotencyKey);
+                $existing = $this->findExistingCheckoutOrder(
+                    $customer->id,
+                    $explicitIdempotencyKey,
+                    true,
+                );
 
                 if ($existing) {
+                    if ($cartRows->isNotEmpty()) {
+                        DB::rollBack();
+
+                        return response()->json([
+                            'message' => 'This checkout key belongs to an earlier order and cannot be used with the current cart.',
+                            'code' => 'STALE_CHECKOUT_KEY',
+                            'active_order' => [
+                                'order_id' => (int) $existing->id,
+                                'order_code' => $existing->Order_Code ?? null,
+                                'payment_status' => $existing->Payment_Status ?? null,
+                                'amount' => isset($existing->Total_Price)
+                                    ? number_format((float) $existing->Total_Price, 3, '.', '')
+                                    : null,
+                            ],
+                        ], 409);
+                    }
+
                     DB::rollBack();
                     return $this->idempotentOrderResponse($existing);
                 }
             }
 
-            // ✅ Load cart rows from DB
+            if ($cartRows->isEmpty()) {
+                throw new \Exception("Cart is empty.");
+            }
+
+            if ($method === 'card') {
+                // A late signed success can arrive after the customer has
+                // already cancelled the local draft and had the cart restored.
+                // Until operations reconciles that captured transaction, do
+                // not let the same customer start another card charge.
+                $amwalGuard = app(ActiveAmwalCheckoutGuard::class);
+                $reviewAmwalOrder = $amwalGuard->reconciliationOrder((int) $customer->id);
+
+                if ($reviewAmwalOrder) {
+                    DB::rollBack();
+
+                    return response()->json([
+                        'message' => 'A previous card payment was captured after cancellation and requires reconciliation before another card payment can be started.',
+                        'code' => 'AMWAL_RECONCILIATION_REQUIRED',
+                        'active_order' => [
+                            'order_id' => (int) $reviewAmwalOrder->id,
+                            'order_code' => $reviewAmwalOrder->Order_Code ?? null,
+                            'payment_status' => 'paid_requires_review',
+                            'amount' => isset($reviewAmwalOrder->Total_Price)
+                                ? number_format((float) $reviewAmwalOrder->Total_Price, 3, '.', '')
+                                : null,
+                        ],
+                    ], 409);
+                }
+
+                // Closing SmartBox restores the cart immediately, but the
+                // gateway can still deliver a signed late capture for a short
+                // period. Keep shopping available while refusing a new card
+                // charge until that settlement uncertainty window has passed.
+                $recentCancelledOrder = $amwalGuard->recentCancelledOrder((int) $customer->id);
+
+                if ($recentCancelledOrder) {
+                    $retryAfter = $amwalGuard->retryAfterSeconds($recentCancelledOrder);
+                    DB::rollBack();
+
+                    return response()->json([
+                        'message' => "The previous card payment is still reconciling. Please retry in {$retryAfter} seconds.",
+                        'code' => 'AMWAL_RETRY_COOLDOWN',
+                        'retry_after_seconds' => $retryAfter,
+                        'previous_order' => [
+                            'order_id' => (int) $recentCancelledOrder->id,
+                            'order_code' => $recentCancelledOrder->Order_Code ?? null,
+                        ],
+                    ], 409);
+                }
+
+                $activeAmwalOrder = DB::table('Orders_Placed_T')
+                    ->where('Customers_Id', $customer->id)
+                    ->where('Payment_Method', 'card')
+                    ->whereIn('Status', ['pending', 'on-hold'])
+                    ->where(function ($query) {
+                        $query->whereNull('Payment_Status')
+                            ->orWhereNotIn('Payment_Status', [
+                                'paid',
+                                'paid_requires_review',
+                                'cancelled',
+                                'refunded',
+                                'partially_refunded',
+                            ]);
+                    })
+                    ->orderByDesc('id')
+                    ->lockForUpdate()
+                    ->first();
+
+                if ($activeAmwalOrder) {
+                    DB::rollBack();
+
+                    return response()->json([
+                        'message' => 'An unpaid card order is already active. Cancel it before paying for a different cart.',
+                        'code' => 'ACTIVE_AMWAL_ORDER_EXISTS',
+                        'active_order' => [
+                            'order_id' => (int) $activeAmwalOrder->id,
+                            'order_code' => $activeAmwalOrder->Order_Code ?? null,
+                            'payment_status' => $activeAmwalOrder->Payment_Status ?? null,
+                            'amount' => isset($activeAmwalOrder->Total_Price)
+                                ? number_format((float) $activeAmwalOrder->Total_Price, 3, '.', '')
+                                : null,
+                        ],
+                    ], 409);
+                }
+            }
+
+            // ✅ Load fulfillment data after replay/conflict checks.
             $selectedAddress = null;
             if ($validated['delivery_method'] === 'ship') {
                 $selectedAddress = DB::table('Customers_Contact_T')
@@ -206,22 +391,26 @@ class OrdersPlacedController extends Controller
                 }
             }
 
-            $cartRows = CustomerCart::query()
-                ->where('Customers_Id', $customer->id)
-                ->get();
-
-            if ($cartRows->isEmpty()) {
-                throw new \Exception("Cart is empty.");
-            }
-
             $checkoutRequestKey = $explicitIdempotencyKey
                 ?: CheckoutIdempotency::fingerprint($customer->id, $cartRows, $request->all());
 
-            $existing = $this->findExistingCheckoutOrder($customer->id, $checkoutRequestKey);
+            $existing = $this->findExistingCheckoutOrder($customer->id, $checkoutRequestKey, true);
 
             if ($existing) {
                 DB::rollBack();
-                return $this->idempotentOrderResponse($existing);
+
+                return response()->json([
+                    'message' => 'This checkout request already belongs to an earlier order and cannot be applied to a non-empty cart.',
+                    'code' => 'STALE_CHECKOUT_KEY',
+                    'active_order' => [
+                        'order_id' => (int) $existing->id,
+                        'order_code' => $existing->Order_Code ?? null,
+                        'payment_status' => $existing->Payment_Status ?? null,
+                        'amount' => isset($existing->Total_Price)
+                            ? number_format((float) $existing->Total_Price, 3, '.', '')
+                            : null,
+                    ],
+                ], 409);
             }
 
             // ✅ Preload all products
@@ -513,6 +702,11 @@ class OrdersPlacedController extends Controller
             }
 
             $paymentStatus = PaymentStatus::initialFor($method, $grandTotal);
+            $deferCardSettlement = $method === 'card' && $grandTotal > 0;
+            $deferLoyaltySettlement = LoyaltyEarningPolicy::deferUntilPaymentConfirmed(
+                $method,
+                $grandTotal,
+            );
 
             // ✅ Create Orders_Placed_T header
             $orderCode = CodeGenerator::createCode('ORD', 'Orders_Placed_T', 'order_code');
@@ -575,43 +769,46 @@ class OrdersPlacedController extends Controller
 
             $orderId = DB::table('Orders_Placed_T')->insertGetId($orderPayload);
 
-            // ✅ Admin notification (keep your logic)
-            try {
-                ConxDatabaseNotification::create([
-                    'type'            => 'App\\Notifications\\NewOrder',
-                    'notifiable_type' => 'App\\Models\\Admin',
-                    'notifiable_id'   => 1,
-                    'data'            => [
-                        'title'    => 'New Order Has Been Created',
-                        'message'  => 'Order ' . $orderCode . ' has been created.',
-                        'order_id' => $orderId,
-                        'url'      => '/orders/' . $orderId,
-                    ],
-                ]);
-            } catch (\Throwable $notifyException) {
-                Log::error('Failed to create admin notification', [
-                    'order_id'  => $orderId,
-                    'error'     => $notifyException->getMessage(),
-                    'exception' => $notifyException,
-                ]);
-            }
+            // A provisional card checkout is not yet a customer order. Keep it
+            // silent until the signed AmwalPay success path settles it.
+            if (!$deferCardSettlement) {
+                try {
+                    ConxDatabaseNotification::create([
+                        'type'            => 'App\\Notifications\\NewOrder',
+                        'notifiable_type' => 'App\\Models\\Admin',
+                        'notifiable_id'   => 1,
+                        'data'            => [
+                            'title'    => 'New Order Has Been Created',
+                            'message'  => 'Order ' . $orderCode . ' has been created.',
+                            'order_id' => $orderId,
+                            'url'      => '/orders/' . $orderId,
+                        ],
+                    ]);
+                } catch (\Throwable $notifyException) {
+                    Log::error('Failed to create admin notification', [
+                        'order_id'  => $orderId,
+                        'error'     => $notifyException->getMessage(),
+                        'exception' => $notifyException,
+                    ]);
+                }
 
-            try {
-                app(CustomerNotificationService::class)->notifyUser(
-                    (int) Auth::id(),
-                    'customer.order_update',
-                    CustomerNotificationPayload::orderUpdate(
-                        orderId: (int) $orderId,
-                        orderCode: $orderCode,
-                        status: (string) ($orderPayload['Status'] ?? 'pending'),
-                    ),
-                );
-            } catch (\Throwable $notifyException) {
-                Log::error('Failed to create customer order notification', [
-                    'order_id' => $orderId,
-                    'customer_id' => $customer->id,
-                    'error' => $notifyException->getMessage(),
-                ]);
+                try {
+                    app(CustomerNotificationService::class)->notifyUser(
+                        (int) Auth::id(),
+                        'customer.order_update',
+                        CustomerNotificationPayload::orderUpdate(
+                            orderId: (int) $orderId,
+                            orderCode: $orderCode,
+                            status: (string) ($orderPayload['Status'] ?? 'pending'),
+                        ),
+                    );
+                } catch (\Throwable $notifyException) {
+                    Log::error('Failed to create customer order notification', [
+                        'order_id' => $orderId,
+                        'customer_id' => $customer->id,
+                        'error' => $notifyException->getMessage(),
+                    ]);
+                }
             }
 
             // ✅ Loyalty: redeem first, then earn on the payable amount
@@ -624,11 +821,20 @@ class OrdersPlacedController extends Controller
                     : (float) ($loyalitypoints->Point ?? 0);
                 $pointsEarned = (int) round($pointsPerOmaniRial * $grandTotal);
 
-                DB::table('Customers_Loyalty_T')->where('Customer_Id', $customer->id)->update([
-                    'Points_Earned'   => DB::raw('Points_Earned + ' . $pointsEarned),
+                $loyaltyUpdate = [
                     'Points_Redeemed' => DB::raw('Points_Redeemed + ' . $loyaltyPointsToRedeem),
                     'updated_at'      => now(),
-                ]);
+                ];
+
+                // Redeemed points are reserved immediately. New points are not
+                // earned until card, COD, or transfer payment is confirmed.
+                if (!$deferLoyaltySettlement) {
+                    $loyaltyUpdate['Points_Earned'] = DB::raw('Points_Earned + ' . $pointsEarned);
+                }
+
+                DB::table('Customers_Loyalty_T')
+                    ->where('Customer_Id', $customer->id)
+                    ->update($loyaltyUpdate);
 
                 if ($loyaltyPointsToRedeem > 0) {
                     DB::table('Customers_Loyalty_Transactions_T')->insert([
@@ -643,7 +849,7 @@ class OrdersPlacedController extends Controller
                     ]);
                 }
 
-                if ($pointsEarned > 0) {
+                if ($pointsEarned > 0 && !$deferLoyaltySettlement) {
                     DB::table('Customers_Loyalty_Transactions_T')->insert([
                         'Loyalty_Transaction_Code' => CodeGenerator::createCode('LOYTRANS', 'Customers_Loyalty_Transactions_T', 'Loyalty_Transaction_Code'),
                         'Customer_Id'              => $customer->id,
@@ -674,7 +880,7 @@ class OrdersPlacedController extends Controller
             $paymentIntent = app(PaymentGateway::class)->createIntent(
                 method: $method,
                 amount: $grandTotal,
-                currency: $pay['currency'] ?? 'OMR',
+                currency: 'OMR',
                 paymentPayload: $pay,
                 context: [
                     'order_id' => $orderId,
@@ -714,12 +920,13 @@ class OrdersPlacedController extends Controller
 
             $specific = [];
             if ($method === 'card') {
-                $card = $pay['card'] ?? [];
+                // SmartBox owns all PAN/CVC/cardholder collection. Card metadata is
+                // populated only from a verified gateway response when available.
                 $specific = [
-                    'Card_Brand'     => $card['brand'] ?? null,
-                    'Card_Last4'     => $card['last4'] ?? null,
-                    'Card_Exp_Month' => $card['exp_month'] ?? null,
-                    'Card_Exp_Year'  => $card['exp_year'] ?? null,
+                    'Card_Brand'     => null,
+                    'Card_Last4'     => null,
+                    'Card_Exp_Month' => null,
+                    'Card_Exp_Year'  => null,
                 ];
             } elseif ($method === 'transfer') {
                 $tr = $pay['transfer'] ?? [];
@@ -820,25 +1027,27 @@ class OrdersPlacedController extends Controller
 
                 $vendorOrderIds[$vendorId] = $vendorOrder->id;
 
-                // ✅ Notify the vendor of their new sale (best-effort)
-                try {
-                    ConxDatabaseNotification::create([
-                        'type'            => 'App\\Notifications\\VendorNewSale',
-                        'notifiable_type' => 'App\\Models\\Vendor',
-                        'notifiable_id'   => $vendorId,
-                        'data'            => [
-                            'title'   => 'New sale',
-                            'message' => 'You have a new order (' . $vendorOrder->Vendor_Order_Code . ') totalling '
-                                . number_format((float) $vendorOrder->Total, 3) . '.',
-                            'url'     => '/orders',
-                        ],
-                    ]);
-                } catch (\Throwable $vendorNotifyException) {
-                    Log::error('Failed to create vendor sale notification', [
-                        'vendor_id' => $vendorId,
-                        'order_id'  => $orderId,
-                        'error'     => $vendorNotifyException->getMessage(),
-                    ]);
+                // Card orders become vendor sales only after AmwalPay confirms payment.
+                if (!$deferCardSettlement) {
+                    try {
+                        ConxDatabaseNotification::create([
+                            'type'            => 'App\\Notifications\\VendorNewSale',
+                            'notifiable_type' => 'App\\Models\\Vendor',
+                            'notifiable_id'   => $vendorId,
+                            'data'            => [
+                                'title'   => 'New sale',
+                                'message' => 'You have a new order (' . $vendorOrder->Vendor_Order_Code . ') totalling '
+                                    . number_format((float) $vendorOrder->Total, 3) . '.',
+                                'url'     => '/orders',
+                            ],
+                        ]);
+                    } catch (\Throwable $vendorNotifyException) {
+                        Log::error('Failed to create vendor sale notification', [
+                            'vendor_id' => $vendorId,
+                            'order_id'  => $orderId,
+                            'error'     => $vendorNotifyException->getMessage(),
+                        ]);
+                    }
                 }
             }
 
@@ -917,29 +1126,43 @@ class OrdersPlacedController extends Controller
 
             DB::commit();
 
-            // ✅ Events / Mail (keep your logic)
-            try {
-                event(new OrderPlaced($orderId, $orderCode, (float) $grandTotal));
+            if (!$deferCardSettlement) {
+                try {
+                    event(new OrderPlaced($orderId, $orderCode, (float) $grandTotal));
 
-                event(new OrderCreated($orderId, [
-                    'title'    => 'New Order Placed',
-                    'message'  => 'Order ' . $orderCode . ' has been placed.',
-                    'order_id' => $orderId,
-                ]));
+                    event(new OrderCreated($orderId, [
+                        'title'    => 'New Order Placed',
+                        'message'  => 'Order ' . $orderCode . ' has been placed.',
+                        'order_id' => $orderId,
+                    ]));
 
-                $to = 'buzz644@yahoo.com';
-                Mail::to($to)->queue(new NewOrderEmail($orderCode));
-            } catch (\Throwable $e) {
-                Log::error('Pusher/Mail failed', [
-                    'order_id' => $orderId,
-                    'error'    => $e->getMessage(),
-                ]);
+                    $to = 'buzz644@yahoo.com';
+                    Mail::to($to)->queue(new NewOrderEmail($orderCode));
+                } catch (\Throwable $e) {
+                    Log::error('Pusher/Mail failed', [
+                        'order_id' => $orderId,
+                        'error'    => $e->getMessage(),
+                    ]);
+                }
             }
 
             return response()->json([
                 'message'    => 'Order placed successfully',
                 'order_code' => $orderCode,
                 'order_id'   => $orderId,
+                'payment'    => [
+                    'method' => $paymentIntent->method,
+                    'status' => $paymentIntent->status,
+                    'gateway' => $paymentIntent->gateway,
+                    'requires_action' => $paymentIntent->method === 'card'
+                        && $paymentIntent->status !== PaymentStatus::PAID,
+                    'configuration_url' => $paymentIntent->method === 'card'
+                        ? "/api/payments/amwal/orders/{$orderId}/configuration"
+                        : null,
+                    'status_url' => $paymentIntent->method === 'card'
+                        ? "/api/payments/amwal/orders/{$orderId}/status"
+                        : null,
+                ],
                 'loyalty'    => [
                     'points_redeemed' => $loyaltyPointsToRedeem,
                     'discount_amount' => $loyaltyDiscountAmount,
@@ -948,7 +1171,7 @@ class OrdersPlacedController extends Controller
                     'subtotal' => round($itemsSubtotal, 3),
                     'original_subtotal' => round($originalItemsSubtotal, 3),
                     'product_discount' => round($productDiscountTotal, 3),
-                    'vat' => round($itemsVat, 3),
+                    'vat' => round($totalVat, 3),
                     'shipping' => round($shippingCost, 3),
                     'before_loyalty' => round($grandTotalBeforeLoyalty, 3),
                     'grand' => round($grandTotal, 3),
@@ -962,6 +1185,25 @@ class OrdersPlacedController extends Controller
                 $existing = $this->findExistingCheckoutOrder((int) $customer->id, $checkoutRequestKey);
 
                 if ($existing) {
+                    $hasCurrentCart = CustomerCart::query()
+                        ->where('Customers_Id', $customer->id)
+                        ->exists();
+
+                    if ($hasCurrentCart) {
+                        return response()->json([
+                            'message' => 'This checkout key belongs to an earlier order and cannot be used with the current cart.',
+                            'code' => 'STALE_CHECKOUT_KEY',
+                            'active_order' => [
+                                'order_id' => (int) $existing->id,
+                                'order_code' => $existing->Order_Code ?? null,
+                                'payment_status' => $existing->Payment_Status ?? null,
+                                'amount' => isset($existing->Total_Price)
+                                    ? number_format((float) $existing->Total_Price, 3, '.', '')
+                                    : null,
+                            ],
+                        ], 409);
+                    }
+
                     return $this->idempotentOrderResponse($existing);
                 }
             }
@@ -973,26 +1215,55 @@ class OrdersPlacedController extends Controller
         }
     }
 
-    private function findExistingCheckoutOrder(int $customerId, ?string $checkoutRequestKey): ?object
+    private function findExistingCheckoutOrder(
+        int $customerId,
+        ?string $checkoutRequestKey,
+        bool $lockForUpdate = false,
+    ): ?object
     {
         if (!$checkoutRequestKey || !Schema::hasColumn('Orders_Placed_T', 'Checkout_Request_Key')) {
             return null;
         }
 
-        return DB::table('Orders_Placed_T')
+        $query = DB::table('Orders_Placed_T')
             ->where('Customers_Id', $customerId)
             ->where('Checkout_Request_Key', $checkoutRequestKey)
-            ->orderByDesc('id')
-            ->first();
+            ->orderByDesc('id');
+
+        if ($lockForUpdate) {
+            $query->lockForUpdate();
+        }
+
+        return $query->first();
     }
 
     private function idempotentOrderResponse(object $order)
     {
+        $paymentMethod = $order->Payment_Method ?? null;
+        $paymentStatus = $order->Payment_Status ?? null;
+        $payable = $paymentMethod === 'card'
+            && strtolower((string) ($order->Status ?? '')) === 'pending'
+            && !in_array($paymentStatus, [PaymentStatus::PAID, 'paid_requires_review', 'cancelled'], true);
+
         return response()->json([
             'message' => 'Order already placed for this checkout request.',
             'idempotent' => true,
             'order_code' => $order->Order_Code ?? null,
             'order_id' => $order->id,
+            'payment' => [
+                'method' => $paymentMethod,
+                'status' => $paymentStatus,
+                'gateway' => $paymentMethod === 'card' ? 'amwal_smartbox' : 'pending_gateway',
+                'paid' => $paymentStatus === PaymentStatus::PAID,
+                'payable' => $payable,
+                'requires_action' => $payable,
+                'configuration_url' => $paymentMethod === 'card'
+                    ? "/api/payments/amwal/orders/{$order->id}/configuration"
+                    : null,
+                'status_url' => $paymentMethod === 'card'
+                    ? "/api/payments/amwal/orders/{$order->id}/status"
+                    : null,
+            ],
             'totals' => [
                 'grand' => isset($order->Total_Price) ? round((float) $order->Total_Price, 3) : null,
             ],
@@ -1062,6 +1333,16 @@ class OrdersPlacedController extends Controller
             ->first();
 
         if (!$order) {
+            return response()->json(['message' => 'Order not found.'], 404);
+        }
+
+        if (strtolower((string) ($order->Payment_Method ?? '')) === 'card'
+            && ! in_array(strtolower((string) ($order->Payment_Status ?? '')), [
+                'paid',
+                'paid_requires_review',
+                'refunded',
+                'partially_refunded',
+            ], true)) {
             return response()->json(['message' => 'Order not found.'], 404);
         }
 
