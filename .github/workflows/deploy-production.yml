@@ -1,12 +1,12 @@
 name: Deploy production
 
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - .github/workflows/deploy-production.yml
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type deploy-production to continue
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -16,9 +16,36 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  verify:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    steps:
+      - name: Confirm production deployment
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: test "$CONFIRM" = "deploy-production"
+
+      - uses: actions/checkout@v4
+
+      - name: Build PHP test image
+        run: docker build -f docker/prod/php/php.dockerfile -t isc-customer-api-ci .
+
+      - name: Install PHP dependencies
+        run: |
+          docker run --rm --entrypoint composer \
+            -v "$PWD/src:/var/www/html" -w /var/www/html \
+            isc-customer-api-ci install --no-interaction --prefer-dist
+
+      - name: Run unit tests
+        run: |
+          docker run --rm --entrypoint php -e APP_ENV=testing \
+            -v "$PWD/src:/var/www/html" -w /var/www/html \
+            isc-customer-api-ci artisan test --testsuite=Unit
+
+  deploy:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     environment: production
 
     steps:
@@ -34,6 +61,7 @@ jobs:
 
       - name: Deploy customer API
         env:
+          DEPLOY_SHA: ${{ github.sha }}
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
@@ -42,16 +70,36 @@ jobs:
             -o IdentitiesOnly=yes \
             -o StrictHostKeyChecking=yes \
             "$VPS_USER@$VPS_HOST" \
-            "flock -w 1200 /home/abdallah/.production-deploy.lock bash -se" <<'REMOTE'
+            "flock -w 3000 /home/abdallah/.production-deploy.lock bash -se -- '$DEPLOY_SHA'" <<'REMOTE'
           set -Eeuo pipefail
-          cd /home/abdallah/apps/laravel-api
+          deploy_sha="$1"
+          test "${#deploy_sha}" -eq 40
+          case "$deploy_sha" in *[!0-9a-f]*) exit 2 ;; esac
 
-          git fetch origin main
-          git merge --ff-only origin/main
-          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+          cd /home/abdallah/apps/laravel-api
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git fetch origin "$deploy_sha"
+          git merge-base --is-ancestor HEAD "$deploy_sha"
+
+          docker compose -f docker-compose.prod.yml exec -T laravel-app-api \
+            php artisan down --retry=60
+          docker compose -f docker-compose.prod.yml stop queue-worker scheduler
+          trap 'echo "Deployment failed; the customer API remains in maintenance mode." >&2' ERR
+
+          git merge --ff-only "$deploy_sha"
+          test "$(git rev-parse HEAD)" = "$deploy_sha"
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+          docker compose -f docker-compose.prod.yml run --rm --build composer \
+            install --no-dev --no-interaction --prefer-dist --optimize-autoloader
+          docker compose -f docker-compose.prod.yml up -d redis
+          docker compose -f docker-compose.prod.yml up -d --build --force-recreate \
+            laravel-app-api
 
           docker compose -f docker-compose.prod.yml exec -T laravel-app-api \
             php artisan optimize:clear
+          docker compose -f docker-compose.prod.yml exec -T laravel-app-api \
+            php artisan migrate --force
           docker compose -f docker-compose.prod.yml exec -T laravel-app-api \
             php artisan config:cache
           docker compose -f docker-compose.prod.yml exec -T laravel-app-api \
@@ -59,9 +107,20 @@ jobs:
           docker compose -f docker-compose.prod.yml exec -T laravel-app-api \
             php artisan view:cache
 
-          docker compose -f docker-compose.prod.yml up -d --build \
-            laravel-app-api nginx queue-worker scheduler redis
-          docker compose -f docker-compose.prod.yml restart nginx
+          docker compose -f docker-compose.prod.yml up -d --build --force-recreate \
+            nginx queue-worker scheduler
+          docker compose -f docker-compose.prod.yml exec -T laravel-app-api \
+            php artisan up
+          trap - ERR
+
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if docker compose -f docker-compose.prod.yml exec -T nginx \
+              wget -qO- http://127.0.0.1/up > /dev/null; then
+              break
+            fi
+            test "$attempt" -lt 10
+            sleep 2
+          done
 
           curl -fsS --retry 5 --retry-delay 2 --retry-all-errors \
             --max-time 20 https://app.avinaq.com/up > /dev/null
