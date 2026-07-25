@@ -32,6 +32,7 @@ use App\Http\Controllers\AmwalNotificationController;
 use App\Http\Controllers\PasswordResetController;
 use App\Http\Controllers\ProductBrandsController;
 use App\Http\Controllers\ShippingQuoteController;
+use App\Http\Controllers\SeoSitemapController;
 use App\Http\Controllers\SupportTicketController;
 use App\Http\Controllers\AccountProfileController;
 use App\Http\Controllers\BackInStockAlertController;
@@ -95,6 +96,8 @@ if (app()->environment(['local', 'testing'])) {
 
 Route::get('/policies', [PolicyPageController::class, 'index']);
 Route::get('/policies/{slug}', [PolicyPageController::class, 'show']);
+Route::get('/seo/sitemap', SeoSitemapController::class)
+       ->name('seo.sitemap');
 
 Route::post('/payments/amwal/notification', AmwalNotificationController::class)
        ->middleware('throttle:60,1');
