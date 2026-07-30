@@ -50,6 +50,7 @@ jobs:
           use Illuminate\Support\Facades\DB;
           use Illuminate\Support\Facades\Schema;
 
+          require '/var/www/html/vendor/autoload.php';
           $app = require '/var/www/html/bootstrap/app.php';
           $app->make(Kernel::class)->bootstrap();
 
