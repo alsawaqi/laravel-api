@@ -24,7 +24,9 @@ return [
     'allowed_origins_patterns' => [],
     'allowed_headers' => ['*'],
     'exposed_headers' => [],
-    'max_age' => 0,
+    // Cache only the browser's CORS preflight permission check. Cart and
+    // authentication responses are still requested and validated normally.
+    'max_age' => 600,
     'supports_credentials' => true,
 
 ];
