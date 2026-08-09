@@ -13,7 +13,7 @@ return [
     |
     */
 
-    'default' => env('FILESYSTEM_DISK', 'local'),
+    'default' => env('FILESYSTEM_DISK', 'uploads'),
 
     /*
     |--------------------------------------------------------------------------
@@ -44,6 +44,22 @@ return [
             'url' => env('APP_URL').'/storage',
             'visibility' => 'public',
             'throw' => false,
+            'report' => false,
+        ],
+
+        'uploads' => [
+            'driver' => 'local',
+            'root' => env('UPLOADS_ROOT', storage_path('app/public')),
+            'url' => env('UPLOADS_URL', env('APP_URL').'/storage'),
+            'visibility' => 'public',
+            'throw' => true,
+            'report' => false,
+        ],
+
+        'private_uploads' => [
+            'driver' => 'local',
+            'root' => env('PRIVATE_UPLOADS_ROOT', storage_path('app/private')),
+            'throw' => true,
             'report' => false,
         ],
 

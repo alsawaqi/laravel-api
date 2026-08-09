@@ -5,6 +5,8 @@ services:
       dockerfile: docker/dev/php/php.dockerfile
     volumes:
       - ./src:/var/www/html
+      - ../shared-storage/public:/var/www/html/storage/app/public
+      - ../shared-storage/private:/var/www/html/storage/app/private
     working_dir: /var/www/html
     command: >
       sh -c "
@@ -23,6 +25,7 @@ services:
       - "83:80"
     volumes:
       - ./src:/var/www/html
+      - ../shared-storage/public:/var/www/html/storage/app/public:ro
       - ./docker/dev/nginx/default.conf:/etc/nginx/conf.d/default.conf
     depends_on:
       - laravel-app-api
@@ -35,6 +38,8 @@ services:
       dockerfile: docker/dev/php/php.dockerfile
     volumes:
       - ./src:/var/www/html
+      - ../shared-storage/public:/var/www/html/storage/app/public
+      - ../shared-storage/private:/var/www/html/storage/app/private
     working_dir: /var/www/html
     entrypoint: ["php", "artisan"]
     networks:
@@ -48,6 +53,8 @@ services:
       dockerfile: docker/dev/php/php.dockerfile
     volumes:
       - ./src:/var/www/html
+      - ../shared-storage/public:/var/www/html/storage/app/public
+      - ../shared-storage/private:/var/www/html/storage/app/private
     working_dir: /var/www/html
     entrypoint: ["composer"]
     networks:
@@ -87,6 +94,8 @@ services:
     restart: unless-stopped
     volumes:
       - ./src:/var/www/html
+      - ../shared-storage/public:/var/www/html/storage/app/public
+      - ../shared-storage/private:/var/www/html/storage/app/private
     working_dir: /var/www/html
     command: ["php", "artisan", "queue:work", "redis", "--sleep=1", "--tries=3", "--timeout=90"]
     depends_on:

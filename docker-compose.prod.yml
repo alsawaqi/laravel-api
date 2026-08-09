@@ -10,7 +10,11 @@ services:
       - cache-data:/var/www/html/bootstrap/cache
     environment:
       APP_ENV: production
-      APP_DEBUG: "false"
+      APP_DEBUG: false
+      FILESYSTEM_DISK: uploads
+      UPLOADS_ROOT: /var/www/html/storage/app/public
+      PRIVATE_UPLOADS_ROOT: /var/www/html/storage/app/private
+      UPLOADS_URL: https://app.avinaq.com/storage
     networks:
       - proxy_network
 

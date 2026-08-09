@@ -26,7 +26,7 @@ class UiSlidersController extends Controller
 
         // optional computed url:
         $rows->transform(function ($r) {
-            $r->image_url = $r->Image_Path ? Storage::disk('r2')->url($r->Image_Path) : null;
+            $r->image_url = $r->Image_Path ? Storage::disk('uploads')->url($r->Image_Path) : null;
             return $r;
         });
 

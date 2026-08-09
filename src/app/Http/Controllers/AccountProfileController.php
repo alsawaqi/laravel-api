@@ -35,7 +35,7 @@ class AccountProfileController extends Controller
             'phone' => (string)($customer->Telephone ?? ''),
             'avatar_path' => $customer->Customer_Profile_Image_Path ?? null,
             'avatar_url' => !empty($customer->Customer_Profile_Image_Path)
-                ? Storage::disk('r2')->url($customer->Customer_Profile_Image_Path)
+                ? Storage::disk('uploads')->url($customer->Customer_Profile_Image_Path)
                 : null,
         ]);
     }
@@ -149,7 +149,7 @@ class AccountProfileController extends Controller
                 $oldAvatar = $customer->Customer_Profile_Image_Path ?? null;
                 if (!empty($validated['remove_avatar']) && Schema::hasColumn('Customers_Master_T', 'Customer_Profile_Image_Path')) {
                     if ($oldAvatar) {
-                        Storage::disk('r2')->delete($oldAvatar);
+                        Storage::disk('uploads')->delete($oldAvatar);
                     }
 
                     $custUpdate['Customer_Profile_Image_Path'] = null;
@@ -160,11 +160,11 @@ class AccountProfileController extends Controller
 
                 if ($request->hasFile('avatar') && Schema::hasColumn('Customers_Master_T', 'Customer_Profile_Image_Path')) {
                     if ($oldAvatar) {
-                        Storage::disk('r2')->delete($oldAvatar);
+                        Storage::disk('uploads')->delete($oldAvatar);
                     }
 
                     $file = $request->file('avatar');
-                    $path = Storage::disk('r2')->putFile('customers/profile', $file, 'public');
+                    $path = Storage::disk('uploads')->putFile('customers/profile', $file, 'public');
 
                     $custUpdate['Customer_Profile_Image_Path'] = $path;
                     $custUpdate['Customer_Profile_Image_Size'] = $file->getSize();

@@ -13,7 +13,7 @@ class OrdersPlaced extends Model
     protected $guarded = [];
 
     /**
-     * Pickup-handover fields written by the admin app. The R2 object key of
+     * Pickup-handover fields written by the admin app. The private upload object key of
      * the collector's ID copy and the internal admin user id are sensitive
      * and must never be echoed in customer-facing responses.
      */
