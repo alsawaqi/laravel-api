@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\VendorOffers;
+
 use App\Models\Products;
 use App\Models\ProductReview;
 use Illuminate\Http\Request;
@@ -168,6 +170,20 @@ class ProductsController extends Controller
                 ];
             });
 
+        if (VendorOffers::ready()) {
+            $baseResults = $products->keyBy('id');
+            $models = Products::query()->active()->whereIn('id', $products->pluck('id'))->get();
+            $products = VendorOffers::expand($models)->map(function ($listing) use ($baseResults) {
+                $row = $baseResults->get($listing->id);
+                $pricing = app(ProductDiscountService::class)->priceForProduct($listing);
+                $row['Vendor_Offer_Id'] = $listing->Vendor_Offer_Id;
+                $row['Seller_Name'] = $listing->Seller_Name;
+                $row['Product_Price'] = $pricing['final_price'];
+                $row['Listing_Key'] = $listing->id.':'.($listing->Vendor_Offer_Id ?? 'own');
+                $row['Route_Path'] = '/product/'.$listing->Slug.($listing->Vendor_Offer_Id ? '?vendor_offer_id='.$listing->Vendor_Offer_Id : '');
+                return $row;
+            });
+        }
         $results = $categories
             ->concat($products)
             ->sort(function ($a, $b) {
@@ -284,6 +300,7 @@ class ProductsController extends Controller
                 ->groupBy('Products_Id');
         }
 
+        $productModels = VendorOffers::expand($productModels);
         $rows = $productModels->map(function ($p) use ($descs, $descIds, $discountService, $reviewsByProduct) {
             // group product's specs by description id
             $byDesc = $p->specifications
@@ -304,7 +321,10 @@ class ProductsController extends Controller
             $pricing = $discountService->priceForProduct($p);
 
             return [
-                'id'    => $p->id,
+                'id' => $p->id,
+                'vendor_offer_id' => $p->Vendor_Offer_Id,
+                'seller_name' => $p->Seller_Name ?? 'ISC',
+                'listing_key' => $p->id.':'.($p->Vendor_Offer_Id ?? 'own'),
                 'name'  => $p->Product_Name,
                 'name_ar'  => $p->Product_Name_Ar,
                 'Product_Name'  => $p->Product_Name,
@@ -350,10 +370,19 @@ class ProductsController extends Controller
 
 
 
-public function detail(Products $product)
+public function detail(Products $product, Request $request)
 {
     try{
+                $request->validate(['vendor_offer_id' => ['nullable', 'integer', 'min:1']]);
                 $product->load(['images','department','subdepartment','subSubDepartment']);
+                $offers = VendorOffers::expand(collect([$product]));
+                if (VendorOffers::ready()) {
+                    $selected = $request->filled('vendor_offer_id')
+                        ? $offers->firstWhere('Vendor_Offer_Id', $request->integer('vendor_offer_id'))
+                        : $offers->first();
+                    abort_unless($selected, 404, 'No available seller offer was found.');
+                    $product = $selected;
+                }
                 app(ProductDiscountService::class)->appendPriceAttributes($product);
 
                 // Quantity-tier bulk prices (public pricing — table ships in
@@ -361,7 +390,7 @@ public function detail(Products $product)
                 if (Schema::hasTable('Products_Bulk_Prices_T')) {
                     $product->setAttribute(
                         'Bulk_Prices',
-                        $product->bulkPrices()->get()->map(fn ($tier) => [
+                        $product->bulkPrices->map(fn ($tier) => [
                             'min_qty'    => (int) $tier->Min_Qty,
                             'max_qty'    => $tier->Max_Qty !== null ? (int) $tier->Max_Qty : null,
                             'unit_price' => round((float) $tier->Unit_Price, 3),
@@ -389,6 +418,11 @@ public function detail(Products $product)
 
     return response()->json([
         'product' => $product,
+        'offers' => ($offers ?? collect())->map(function ($offer) {
+            $pricing = app(ProductDiscountService::class)->priceForProduct($offer);
+            return ['vendor_offer_id' => $offer->Vendor_Offer_Id, 'seller_name' => $offer->Seller_Name ?? 'ISC',
+                'price' => $pricing['final_price'], 'stock' => (int) $offer->Product_Stock];
+        })->values(),
         'specifications' => $formatted,
         'review_summary' => Schema::hasTable('Product_Reviews_T')
             ? ProductEngagementRules::ratingSummary(

@@ -16,6 +16,7 @@ final class CheckoutIdempotency
             $cart[] = [
                 'id' => self::value($row, 'id'),
                 'product_id' => self::value($row, 'Products_Id'),
+                'vendor_offer_id' => self::value($row, 'Vendor_Offer_Id'),
                 'quantity' => (int) self::value($row, 'Quantity'),
             ];
         }

@@ -15,6 +15,7 @@ class CustomerCart extends Model
         'Cart_Code', 
         'Customers_Id',
         'Products_Id',
+        'Vendor_Offer_Id',
         'Quantity',
         'deleted_at',
         'created_at',

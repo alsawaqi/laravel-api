@@ -20,7 +20,7 @@ class Products extends Model
      * Internal admin-only money fields — customers must never see the
      * product cost or the minimum-selling floor in any serialized response.
      */
-    protected $hidden = ['Product_Cost', 'Minimum_Selling_Price'];
+    protected $hidden = ['Product_Cost', 'Minimum_Selling_Price', 'Commission_Type', 'Commission_Value'];
 
     /**
      * Storefront visibility: only active products (Is_Active = 1). Guarded by

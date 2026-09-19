@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\CustomerCart;
 use App\Models\Products;
+use App\Services\VendorOffers;
 use App\Services\Checkout\ActiveAmwalCheckoutGuard;
 use App\Services\ProductDiscountService;
 use App\Support\Pricing\BulkPriceResolver;
@@ -107,6 +108,15 @@ class CustomerCartController extends Controller
 
             $row->setAttribute('is_unavailable', $unavailable);
 
+            if ($row->product && VendorOffers::ready()) {
+                try {
+                    $selected = VendorOffers::resolve($row->product, $row->Vendor_Offer_Id ? (int) $row->Vendor_Offer_Id : null);
+                    $row->setRelation('product', $selected);
+                    $row->setAttribute('Vendor_Offer_Id', $selected->Vendor_Offer_Id);
+                } catch (\Illuminate\Validation\ValidationException) {
+                    $row->setAttribute('is_unavailable', true);
+                }
+            }
             if ($row->product) {
                 $discountService->appendPriceAttributes($row->product);
 
@@ -151,6 +161,7 @@ class CustomerCartController extends Controller
         $payload = $request->validate([
             'items' => ['required', 'array'],
             'items.*.product_id' => ['required', 'integer'],
+            'items.*.vendor_offer_id' => ['nullable', 'integer', 'min:1'],
             'items.*.quantity' => ['required', 'integer', 'min:1'],
         ]);
 
@@ -168,9 +179,16 @@ class CustomerCartController extends Controller
                     continue;
                 }
 
+                try {
+                    $offerId = $this->offerId($productId, isset($item['vendor_offer_id']) ? (int) $item['vendor_offer_id'] : null);
+                } catch (\Illuminate\Validation\ValidationException) {
+                    // Retired seller offers are handled like retired guest-cart products.
+                    continue;
+                }
                 $existing = CustomerCart::query()
                     ->where('Customers_Id', $customer->id)
                     ->where('Products_Id', $productId)
+                    ->when(VendorOffers::ready(), fn ($q) => $q->where('Vendor_Offer_Id', $offerId))
                     ->lockForUpdate()
                     ->first();
 
@@ -181,6 +199,7 @@ class CustomerCartController extends Controller
                     CustomerCart::create([
                         'Customers_Id' => $customer->id,
                         'Products_Id' => $productId,
+                        ...(VendorOffers::ready() ? ['Vendor_Offer_Id' => $offerId] : []),
                         'Quantity' => $qty,
                     ]);
                 }
@@ -196,13 +215,15 @@ class CustomerCartController extends Controller
 
         $data = $request->validate([
             'product_id' => ['required', 'integer'],
+            'vendor_offer_id' => ['nullable', 'integer', 'min:1'],
             'quantity' => ['required', 'integer', 'min:1'], // ✅ no zero here
         ]);
 
         $productId = (int) $data['product_id'];
+        $requestedOfferId = isset($data['vendor_offer_id']) ? (int) $data['vendor_offer_id'] : null;
         $qty = (int) $data['quantity'];
 
-        $available = DB::transaction(function () use ($customer, $productId, $qty) {
+        $available = DB::transaction(function () use ($customer, $productId, $qty, $requestedOfferId) {
             $this->lockCustomerForCartMutation((int) $customer->id);
             $this->assertCartIsNotOwnedByPayment((int) $customer->id);
 
@@ -210,9 +231,11 @@ class CustomerCartController extends Controller
                 return false;
             }
 
+            $offerId = $this->offerId($productId, $requestedOfferId);
             $row = CustomerCart::query()
                 ->where('Customers_Id', $customer->id)
                 ->where('Products_Id', $productId)
+                    ->when(VendorOffers::ready(), fn ($q) => $q->where('Vendor_Offer_Id', $offerId))
                 ->lockForUpdate()
                 ->first();
 
@@ -222,6 +245,7 @@ class CustomerCartController extends Controller
                 CustomerCart::create([
                     'Customers_Id' => $customer->id,
                     'Products_Id' => $productId,
+                        ...(VendorOffers::ready() ? ['Vendor_Offer_Id' => $offerId] : []),
                     'Quantity' => $qty,
                 ]);
             }
@@ -242,13 +266,15 @@ class CustomerCartController extends Controller
 
         $data = $request->validate([
             'product_id' => ['required', 'integer'],
+            'vendor_offer_id' => ['nullable', 'integer', 'min:1'],
             'quantity' => ['sometimes', 'integer', 'min:1'], // default 1
         ]);
 
         $productId = (int) $data['product_id'];
+        $requestedOfferId = isset($data['vendor_offer_id']) ? (int) $data['vendor_offer_id'] : null;
         $addQty = (int) ($data['quantity'] ?? 1);
 
-        $available = DB::transaction(function () use ($customer, $productId, $addQty) {
+        $available = DB::transaction(function () use ($customer, $productId, $addQty, $requestedOfferId) {
             $this->lockCustomerForCartMutation((int) $customer->id);
             $this->assertCartIsNotOwnedByPayment((int) $customer->id);
 
@@ -256,9 +282,11 @@ class CustomerCartController extends Controller
                 return false;
             }
 
+            $offerId = $this->offerId($productId, $requestedOfferId);
             $row = CustomerCart::query()
                 ->where('Customers_Id', $customer->id)
                 ->where('Products_Id', $productId)
+                    ->when(VendorOffers::ready(), fn ($q) => $q->where('Vendor_Offer_Id', $offerId))
                 ->lockForUpdate()
                 ->first();
 
@@ -268,6 +296,7 @@ class CustomerCartController extends Controller
                 CustomerCart::create([
                     'Customers_Id' => $customer->id,
                     'Products_Id' => $productId,
+                        ...(VendorOffers::ready() ? ['Vendor_Offer_Id' => $offerId] : []),
                     'Quantity' => $addQty,
                 ]);
             }
@@ -292,59 +321,38 @@ class CustomerCartController extends Controller
         return $this->sync($request);
     }
 
-    // Upsert a single item (logged-in add/update)
-    // public function upsert(Request $request)
-    // {
-    //     $customer = $this->customerOrFail();
-
-    //     $data = $request->validate([
-    //         'product_id' => ['required', 'integer'],
-    //         'quantity'   => ['required', 'integer', 'min:0'],
-    //     ]);
-
-    //     $productId = (int) $data['product_id'];
-    //     $qty       = (int) $data['quantity'];
-
-    //     $row = CustomerCart::query()
-    //         ->where('Customers_Id', $customer->id)
-    //         ->where('Products_Id', $productId)
-    //         ->first();
-
-    //     // quantity 0 => delete
-    //     if ($qty === 0) {
-    //         if ($row) $row->delete();
-    //         return $this->index();
-    //     }
-
-    //     if ($row) {
-    //         $row->update(['Quantity' => $qty]);
-    //     } else {
-    //         CustomerCart::create([
-
-    //             'Customers_Id' => $customer->id,
-    //             'Products_Id'  => $productId,
-    //             'Quantity'     => $qty,
-    //         ]);
-    //     }
-
-    //     return $this->index();
-    // }
-
-    public function remove(int $productId)
+    public function remove(Request $request, int $productId)
     {
         $customer = $this->customerOrFail();
 
-        DB::transaction(function () use ($customer, $productId) {
+        $data = $request->validate(['vendor_offer_id' => ['nullable', 'integer', 'min:1']]);
+        $offerId = isset($data['vendor_offer_id']) ? (int) $data['vendor_offer_id'] : null;
+        if (VendorOffers::ready() && $offerId === null) {
+            $legacyVendorId = Products::withTrashed()->whereKey($productId)->value('Vendor_Id');
+            if ($legacyVendorId) {
+                $offerId = \App\Models\ProductVendorOffer::withTrashed()->where('Products_Id', $productId)->where('Vendor_Id', $legacyVendorId)->value('id');
+            }
+        }
+        DB::transaction(function () use ($customer, $productId, $offerId) {
             $this->lockCustomerForCartMutation((int) $customer->id);
             $this->assertCartIsNotOwnedByPayment((int) $customer->id);
 
             CustomerCart::query()
                 ->where('Customers_Id', $customer->id)
                 ->where('Products_Id', $productId)
+                    ->when(VendorOffers::ready(), fn ($q) => $q->where('Vendor_Offer_Id', $offerId))
                 ->delete();
         }, 3);
 
         return $this->index();
+    }
+
+    private function offerId(int $productId, ?int $offerId): ?int
+    {
+        $product = Products::query()->active()->findOrFail($productId);
+        $selected = VendorOffers::resolve($product, $offerId);
+
+        return $selected->Vendor_Offer_Id ? (int) $selected->Vendor_Offer_Id : null;
     }
 
     public function clear()

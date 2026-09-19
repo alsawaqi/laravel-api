@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers;
 
+use App\Services\VendorOffers;
+
 use App\Models\User;
 use App\Models\Products;
 use App\Events\OrderPlaced;
@@ -500,6 +502,7 @@ class OrdersPlacedController extends Controller
                     throw new \Exception("Product not found: ID {$cart->Products_Id}");
                 }
 
+                $product = VendorOffers::resolve($product, $cart->Vendor_Offer_Id ? (int) $cart->Vendor_Offer_Id : null, true);
                 $qty = (int) $cart->Quantity;
 
                 // stock validation
@@ -572,6 +575,7 @@ class OrdersPlacedController extends Controller
                 $lines[] = [
                     'cart_id'    => $cart->id,
                     'product_id' => $product->id,
+                    'vendor_offer_id' => $product->Vendor_Offer_Id ? (int) $product->Vendor_Offer_Id : null,
                     'vendor_id'  => $vendorId,
                     'qty'        => $qty,
                     'original_price' => $originalPrice,
@@ -1064,6 +1068,7 @@ class OrdersPlacedController extends Controller
                     'Cart_Id'                 => $ln['cart_id'],
 
                     'Products_Id'             => $ln['product_id'],
+                    ...(VendorOffers::ready() ? ['Vendor_Offer_Id' => $ln['vendor_offer_id']] : []),
                     'Quantity'                => $ln['qty'],
                     'Price'                   => $ln['price'],
                     'Subtotal'                => $ln['subtotal'],
@@ -1109,7 +1114,7 @@ class OrdersPlacedController extends Controller
 
                 DB::table('Orders_Placed_Details_T')->insert($detailPayload);
 
-                $affectedRows = Products::where('id', $ln['product_id'])
+                $affectedRows = VendorOffers::stockRecord((int) $ln['product_id'], $ln['vendor_offer_id'], $ln['vendor_id'])
                     ->where('Product_Stock', '>=', $ln['qty'])
                     ->update([
                         'Product_Stock' => DB::raw("Product_Stock - {$ln['qty']}"),
@@ -1180,6 +1185,7 @@ class OrdersPlacedController extends Controller
 
         } catch (\Exception $e) {
             DB::rollBack();
+            if ($e instanceof \Illuminate\Validation\ValidationException) { throw $e; }
 
             if ($customer && $checkoutRequestKey && $this->isDuplicateCheckoutKeyException($e)) {
                 $existing = $this->findExistingCheckoutOrder((int) $customer->id, $checkoutRequestKey);
@@ -1380,8 +1386,14 @@ class OrdersPlacedController extends Controller
             ]);
         }
 
+        if (VendorOffers::ready()) {
+            $itemSelect[] = 'd.Vendor_Offer_Id';
+        }
+        $itemSelect[] = 'd.Vendor_Id';
+        $itemSelect[] = 'seller.Vendor_Name as Seller_Name';
         $items = DB::table('Orders_Placed_Details_T as d')
             ->leftJoin('Products_Master_T as p', 'p.id', '=', 'd.Products_Id')
+            ->leftJoin('Vendors_Master_T as seller', 'seller.id', '=', 'd.Vendor_Id')
             ->leftJoinSub($imagePick, 'pi_pick', function ($join) {
                 $join->on('pi_pick.Products_Id', '=', 'p.id');
             })
@@ -1399,6 +1411,8 @@ class OrdersPlacedController extends Controller
                     'id' => (int) $item->id,
                     'order_line_code' => $item->Order_Placed_Code,
                     'product_id' => $item->Products_Id ? (int) $item->Products_Id : null,
+                    'vendor_offer_id' => isset($item->Vendor_Offer_Id) ? (int) $item->Vendor_Offer_Id : null,
+                    'seller_name' => $item->Seller_Name ?? 'ISC',
                     'product_name' => $item->Product_Name,
                     'product_code' => $item->Product_Sku ?: $item->Product_Code,
                     'product_slug' => $item->Slug,
