@@ -26,10 +26,12 @@ class UiSlidersController extends Controller
 
         // optional computed url:
         $rows->transform(function ($r) {
-            $r->image_url = $r->Image_Path ? Storage::disk('uploads')->url($r->Image_Path) : null;
+            $r->image_available = (bool) $r->Image_Path && Storage::disk('uploads')->exists($r->Image_Path);
+            $r->image_url = $r->image_available ? Storage::disk('uploads')->url($r->Image_Path) : null;
             return $r;
         });
 
-        return response()->json($rows);
+        return response()->json($rows)
+            ->header('Cache-Control', 'public, max-age=15, s-maxage=30');
     }
 }
