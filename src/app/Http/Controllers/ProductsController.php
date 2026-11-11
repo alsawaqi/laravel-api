@@ -13,6 +13,7 @@ use App\Models\ProductsSubSubDepartment;
 use App\Models\ProductSpecificationProduct;
 use App\Services\ProductDiscountService;
 use App\Models\ProductSpecificationDescription;
+use App\Support\Catalog\CatalogSearch;
 use App\Support\Reviews\ProductEngagementRules;
 use App\Support\Localization\StorefrontArabicFields;
 
@@ -21,15 +22,17 @@ class ProductsController extends Controller
  
     public function index(Request $request)
     {
-        $q = trim((string) $request->query('q', ''));
+        $input = $request->query('q', '');
+        $q = is_string($input) ? trim(preg_replace('/[\s\p{Z}]+/u', ' ', $input) ?? '') : '';
         $limit = min(max((int) $request->query('limit', 10), 1), 50);
 
-        if (mb_strlen($q) < 2) {
+        if (mb_strlen($q) < 2 || mb_strlen($q) > 256 || str_contains($q, "\0")) {
             return response()->json([]);
         }
 
-        $contains = "%{$q}%";
-        $prefix = "{$q}%";
+        $literal = CatalogSearch::escapeLike($q);
+        $contains = "%{$literal}%";
+        $prefix = "{$literal}%";
         $perGroupLimit = max($limit, 10);
 
         $categories = DB::table('Products_Sub_Sub_Department_T as ssd')
@@ -37,22 +40,22 @@ class ProductsController extends Controller
             ->join('Products_Departments_T as d', 'd.id', '=', 'sd.Products_Departments_Id')
             ->select(StorefrontArabicFields::categorySearchSelect())
             ->whereNotNull('ssd.Slug')
-            ->where(function ($query) use ($contains) {
-                $query->where('ssd.Product_Sub_Sub_Department_Name', 'like', $contains)
-                    ->orWhere('ssd.Product_Sub_Sub_Department_Name_Ar', 'like', $contains)
-                    ->orWhere('ssd.Product_Sub_Sub_Department_Code', 'like', $contains)
-                    ->orWhere('ssd.Slug', 'like', $contains)
-                    ->orWhere('sd.Sub_Department_Name', 'like', $contains)
-                    ->orWhere('sd.Sub_Department_Name_Ar', 'like', $contains)
-                    ->orWhere('d.Product_Department_Name_Ar', 'like', $contains)
-                    ->orWhere('d.Product_Department_Name', 'like', $contains);
-            })
+            ->whereRaw(...CatalogSearch::matchAll([
+                'ssd.Product_Sub_Sub_Department_Name',
+                'ssd.Product_Sub_Sub_Department_Name_Ar',
+                'ssd.Product_Sub_Sub_Department_Code',
+                'ssd.Slug',
+                'sd.Sub_Department_Name',
+                'sd.Sub_Department_Name_Ar',
+                'd.Product_Department_Name_Ar',
+                'd.Product_Department_Name',
+            ], [$contains]))
             ->orderByRaw(
                 "CASE
                     WHEN ssd.Product_Sub_Sub_Department_Name = ? THEN 0
-                    WHEN ssd.Product_Sub_Sub_Department_Name LIKE ? THEN 1
-                    WHEN sd.Sub_Department_Name LIKE ? THEN 2
-                    WHEN d.Product_Department_Name LIKE ? THEN 3
+                    WHEN ssd.Product_Sub_Sub_Department_Name LIKE ? ESCAPE '!' THEN 1
+                    WHEN sd.Sub_Department_Name LIKE ? ESCAPE '!' THEN 2
+                    WHEN d.Product_Department_Name LIKE ? ESCAPE '!' THEN 3
                     ELSE 4
                 END",
                 [$q, $prefix, $prefix, $prefix]
@@ -103,38 +106,21 @@ class ProductsController extends Controller
         $hasDeletedAt = Schema::hasColumn('Products_Master_T', 'deleted_at');
         $hasIsActive = Schema::hasColumn('Products_Master_T', 'Is_Active');
 
-        $products = DB::table('Products_Master_T as p')
+        $productQuery = DB::table('Products_Master_T as p')
             ->leftJoin('Products_Sub_Sub_Department_T as ssd', 'ssd.id', '=', 'p.Product_Sub_Sub_Department_Id')
             ->leftJoin('Products_Sub_Department_T as sd', 'sd.id', '=', 'p.Product_Sub_Department_Id')
             ->leftJoin('Products_Departments_T as d', 'd.id', '=', 'p.Product_Department_Id')
             ->select(StorefrontArabicFields::productSearchSelect())
             ->when($hasDeletedAt, fn ($query) => $query->whereNull('p.deleted_at'))
             ->when($hasIsActive, fn ($query) => $query->where('p.Is_Active', 1))
-            ->whereNotNull('p.Slug')
-            ->where(function ($query) use ($contains) {
-                $query->where('p.Product_Name', 'like', $contains)
-                    ->orWhere('p.Product_Name_Ar', 'like', $contains)
-                    ->orWhere('p.Product_Sku', 'like', $contains)
-                    ->orWhere('p.Product_Code', 'like', $contains)
-                    ->orWhere('p.Product_Description', 'like', $contains)
-                    ->orWhere('ssd.Product_Sub_Sub_Department_Name_Ar', 'like', $contains)
-                    ->orWhere('ssd.Product_Sub_Sub_Department_Name', 'like', $contains);
-            })
-            ->orderByRaw(
-                "CASE
-                    WHEN p.Product_Name = ? THEN 0
-                    WHEN p.Product_Name LIKE ? THEN 1
-                    WHEN p.Product_Sku LIKE ? THEN 2
-                    WHEN p.Product_Code LIKE ? THEN 3
-                    WHEN ssd.Product_Sub_Sub_Department_Name LIKE ? THEN 4
-                    ELSE 5
-                END",
-                [$q, $prefix, $prefix, $prefix, $prefix]
-            )
+            ->whereNotNull('p.Slug');
+
+        $products = CatalogSearch::rankProducts($productQuery, $q)
             ->orderBy('p.Product_Name')
+            ->orderBy('p.id')
             ->limit($perGroupLimit)
             ->get()
-            ->map(function ($row) use ($q) {
+            ->map(function ($row) {
                 $subtitleParts = array_filter([
                     $row->Product_Sku ?: $row->Product_Code,
                     $row->Product_Sub_Sub_Department_Name,
@@ -156,14 +142,7 @@ class ProductsController extends Controller
                         $row->Product_Sku ?: $row->Product_Code,
                         $row->Product_Sub_Sub_Department_Name_Ar ?: $row->Product_Sub_Sub_Department_Name,
                     ])),
-                    'Search_Score' => $this->searchScore($q, [
-                        $row->Product_Name,
-                        $row->Product_Name_Ar,
-                        $row->Product_Sku,
-                        $row->Product_Code,
-                        $row->Product_Sub_Sub_Department_Name,
-                        $row->Product_Sub_Sub_Department_Name_Ar,
-                    ], 10),
+                    'Search_Score' => (int) $row->Search_Score,
                     'Product_Sub_Sub_Department_Name' => $row->Product_Sub_Sub_Department_Name,
                     'Product_Sub_Sub_Department_Name_Ar' => $row->Product_Sub_Sub_Department_Name_Ar,
                     'Route_Path' => "/product/{$row->Slug}",
