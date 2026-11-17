@@ -259,7 +259,7 @@ class ProductsController extends Controller
         // -------------------------------
         $descs = ProductSpecificationDescription::query()
             ->where('product_sub_sub_department_id', $subsub->id)
-            ->where('is_active', 1)
+            ->where('show_in_table', 1)
             // nulls last, then sort_order, then id
             ->orderByRaw('CASE WHEN sort_order IS NULL THEN 1 ELSE 0 END ASC, sort_order ASC, id ASC')
             ->get(['id', 'Product_Specification_Description_Name']);
